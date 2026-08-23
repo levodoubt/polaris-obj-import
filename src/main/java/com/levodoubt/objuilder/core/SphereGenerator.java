@@ -30,18 +30,18 @@ public class SphereGenerator {
                 int b = base + (j + 1) % slices;
                 int c = baseN + (j + 1) % slices;
                 int d = baseN + j;
-                mesh.faces.add(new int[]{a, b, c});
-                mesh.faces.add(new int[]{a, c, d});
+                mesh.faces.add(new ObjMesh.Face(a, b, c, -1, -1, -1));
+                mesh.faces.add(new ObjMesh.Face(a, c, d, -1, -1, -1));
             }
         }
         // 北极扇
         for (int j = 0; j < slices; j++) {
-            mesh.faces.add(new int[]{0, 1 + (j + 1) % slices, 1 + j});
+            mesh.faces.add(new ObjMesh.Face(0, 1 + (j + 1) % slices, 1 + j, -1, -1, -1));
         }
         // 南极扇
         int lastRing = 1 + (stacks - 2) * slices;
         for (int j = 0; j < slices; j++) {
-            mesh.faces.add(new int[]{southIdx, lastRing + j, lastRing + (j + 1) % slices});
+            mesh.faces.add(new ObjMesh.Face(southIdx, lastRing + j, lastRing + (j + 1) % slices, -1, -1, -1));
         }
         return mesh;
     }

@@ -37,7 +37,7 @@ public class PieceBakedModel implements BakedModel {
 
     @Override
     public boolean useAmbientOcclusion() {
-        return false;
+        return true; // 恢复 AO → MC 逐顶点计算环境光遮蔽 + 真实光照（斜面也随光源变化）
     }
 
     @Override

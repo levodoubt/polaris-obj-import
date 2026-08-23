@@ -2,6 +2,7 @@ package com.levodoubt.objuilder;
 
 import com.levodoubt.objuilder.client.PieceBakedModel;
 import com.levodoubt.objuilder.command.ObjImportCommand;
+import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.CommandDispatcher;
 
@@ -24,19 +25,48 @@ public class PolarisObjuilderClient {
     @SubscribeEvent
     public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
+        // /objimport <mode> [scale] [file]
+        var scaleOpt = Commands.argument("scale", FloatArgumentType.floatArg(0.01f, 100f))
+                .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null, false,
+                        FloatArgumentType.getFloat(ctx, "scale")))
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file"), false,
+                                FloatArgumentType.getFloat(ctx, "scale"))));
+        var scaleBlock = Commands.argument("scale", FloatArgumentType.floatArg(0.01f, 100f))
+                .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null, true,
+                        FloatArgumentType.getFloat(ctx, "scale")))
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file"), true,
+                                FloatArgumentType.getFloat(ctx, "scale"))));
         dispatcher.register(Commands.literal("objimport")
-                // /objimport slice [file] —— 子片空壳
+                // /objimport slice [scale] [file] —— 子片空壳
                 .then(Commands.literal("slice")
-                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null, false))
+                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null, false, 1f))
+                        .then(scaleOpt)
                         .then(Commands.argument("file", StringArgumentType.greedyString())
                                 .executes(ctx -> ObjImportCommand.run(ctx.getSource(),
-                                        StringArgumentType.getString(ctx, "file"), false))))
-                // /objimport block [file] —— 子片 + 内部石头
+                                        StringArgumentType.getString(ctx, "file"), false, 1f))))
+                // /objimport block [scale] [file] —— 子片 + 内部石头
                 .then(Commands.literal("block")
-                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null, true))
+                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null, true, 1f))
+                        .then(scaleBlock)
                         .then(Commands.argument("file", StringArgumentType.greedyString())
                                 .executes(ctx -> ObjImportCommand.run(ctx.getSource(),
-                                        StringArgumentType.getString(ctx, "file"), true)))));
+                                        StringArgumentType.getString(ctx, "file"), true, 1f)))));
+        // /objexport <out> <file> —— 离线烘焙导出（out 在前用 string，file 最后用 greedy 以支持含空格路径）
+        dispatcher.register(Commands.literal("objexport")
+                .then(Commands.argument("out", StringArgumentType.string())
+                        .then(Commands.argument("file", StringArgumentType.greedyString())
+                                .executes(ctx -> ObjImportCommand.export(ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "file"),
+                                        StringArgumentType.getString(ctx, "out"))))));
+        // /objload <file> —— 快速摆放烘焙文件
+        dispatcher.register(Commands.literal("objload")
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.load(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file")))));
     }
 
     @SubscribeEvent
