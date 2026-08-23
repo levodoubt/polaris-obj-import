@@ -1,0 +1,9 @@
+{
+  "polarisobjuilder.configuration.title": "Polaris Objuilder Configs",
+  "polarisobjuilder.configuration.section.polarisobjuilder.common.toml": "Polaris Objuilder Configs",
+  "polarisobjuilder.configuration.section.polarisobjuilder.common.toml.title": "Polaris Objuilder Configs",
+  "polarisobjuilder.configuration.items": "Item List",
+  "polarisobjuilder.configuration.logDirtBlock": "Log Dirt Block",
+  "polarisobjuilder.configuration.magicNumberIntroduction": "Magic Number Text",
+  "polarisobjuilder.configuration.magicNumber": "Magic Number"
+}
