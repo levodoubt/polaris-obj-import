@@ -12,6 +12,7 @@ import com.levodoubt.objuilder.client.PieceModelCache;
 import com.levodoubt.objuilder.core.BakeFormat;
 import com.levodoubt.objuilder.core.ObjMesh;
 import com.levodoubt.objuilder.core.ObjParser;
+import com.levodoubt.objuilder.core.Schematic;
 import com.levodoubt.objuilder.core.SphereGenerator;
 import com.levodoubt.objuilder.core.Voxelizer;
 import com.levodoubt.objuilder.debug.LastImportStats;
@@ -155,6 +156,124 @@ public class ObjImportCommand {
                         "§a[Objuilder] 烘焙完成 → %s (表面格 %d · 模板族 %d · 渲染三角形 %d)",
                         targetFile.getAbsolutePath(), stats.gridCells(), stats.pieceCount(), stats.totalRenderTris())), true);
             }
+        }, Minecraft.getInstance());
+        return 1;
+    }
+
+    /** schematic 导出：后台切分 → 保存 .schem（Sponge v2，结构方块/WorldEdit 兼容） */
+    public static int exportSchem(CommandSourceStack source, String file, String out) {
+        File f = new File(file);
+        if (!f.isAbsolute()) f = new File(new File(neoforgePath(), "models"), file);
+        if (!f.exists()) {
+            source.sendFailure(Component.literal("找不到模型: " + f.getAbsolutePath()));
+            return 0;
+        }
+        File outFile = new File(out);
+        if (!outFile.isAbsolute()) outFile = new File(neoforgePath(), out);
+        final File inFile = f;
+        final File targetFile = outFile;
+
+        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台生成 schematic..."), false);
+        CompletableFuture.supplyAsync(() -> {
+            ObjMesh mesh = ObjParser.parse(inFile);
+            Voxelizer.Result result = Voxelizer.voxelize(mesh, 16);
+            try {
+                Schematic.export(targetFile, result.placements(), result.interior(), mesh.texturePath);
+                return result.stats();
+            } catch (Exception e) {
+                PolarisObjuilder.LOGGER.error("[Objuilder] schematic 导出失败", e);
+                return null;
+            }
+        }, Util.backgroundExecutor()).thenAcceptAsync(stats -> {
+            if (stats == null) {
+                source.sendFailure(Component.literal("schematic 导出失败，详见日志"));
+            } else {
+                source.sendSuccess(() -> Component.literal(String.format(
+                        "§a[Objuilder] schematic 完成 → %s (表面格 %d · 内部石头 %d)",
+                        targetFile.getAbsolutePath(), stats.gridCells(), stats.interiorCount())), true);
+            }
+        }, Minecraft.getInstance());
+        return 1;
+    }
+
+    /** schematic 导入：读取 .schem → 分块放置 */
+    public static int loadSchem(CommandSourceStack source, String file) {
+        File f = new File(file);
+        if (!f.isAbsolute()) f = new File(neoforgePath(), file);
+        if (!f.exists()) {
+            source.sendFailure(Component.literal("找不到 schematic 文件: " + f.getAbsolutePath()));
+            return 0;
+        }
+        final File inFile = f;
+        source.sendSuccess(() -> Component.literal("§7[Objuilder] 读取 schematic..."), false);
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return Schematic.load(inFile);
+            } catch (Exception e) {
+                PolarisObjuilder.LOGGER.error("[Objuilder] 读取 schematic 失败", e);
+                return null;
+            }
+        }, Util.backgroundExecutor()).thenAcceptAsync(data -> {
+            if (data == null) {
+                source.sendFailure(Component.literal("读取 schematic 失败，详见日志"));
+                return;
+            }
+            Level level = authorityWorld(Minecraft.getInstance().level);
+            BlockPos base = Minecraft.getInstance().player.blockPosition().offset(3, 0, 3);
+            int w = data.width(), h = data.height(), d = data.length();
+
+            // 烘焙贴图到缓存（若有）
+            String texPath = data.texturePath();
+            if (texPath != null && !texPath.isBlank()) {
+                TextureAtlasSprite sprite = Minecraft.getInstance()
+                        .getTextureAtlas(TextureAtlas.LOCATION_BLOCKS)
+                        .apply(ResourceLocation.fromNamespaceAndPath("minecraft", "block/white_concrete"));
+                NativeImage texture = loadTexturePath(texPath);
+                // 注：schematic 不含几何，仅含方块状态；几何需另行加载（这里只放方块）
+                PolarisObjuilder.LOGGER.info("[Objuilder] schematic 贴图引用: {}", texPath);
+            }
+
+            // 分块放置
+            Minecraft mc = Minecraft.getInstance();
+            var idx = new java.util.concurrent.atomic.AtomicInteger(0);
+            int total = w * h * d;
+            mc.execute(() -> {
+                int placed = 0;
+                while (idx.get() < total && placed < BLOCKS_PER_TICK) {
+                    int i = idx.getAndIncrement();
+                    int x = i % w;
+                    int y = (i / w) % h;
+                    int z = i / (w * h);
+                    byte paletteIdx = data.blockData()[i];
+                    if (paletteIdx == 0) continue; // air
+                    BlockState state = Schematic.resolveBlockState(data, paletteIdx & 0xFF);
+                    level.setBlock(base.offset(x, y, z), state, 3);
+                    placed++;
+                }
+                if (idx.get() < total) {
+                    mc.execute(() -> {
+                        int placed2 = 0;
+                        while (idx.get() < total && placed2 < BLOCKS_PER_TICK) {
+                            int i = idx.getAndIncrement();
+                            int x = i % w;
+                            int y = (i / w) % h;
+                            int z = i / (w * h);
+                            byte paletteIdx = data.blockData()[i];
+                            if (paletteIdx == 0) continue;
+                            level.setBlock(base.offset(x, y, z),
+                                    Schematic.resolveBlockState(data, paletteIdx & 0xFF), 3);
+                            placed2++;
+                        }
+                        if (idx.get() >= total) {
+                            source.sendSuccess(() -> Component.literal(
+                                    "§a[Objuilder] schematic 放置完成 → " + total + " 格"), true);
+                        }
+                    });
+                } else {
+                    source.sendSuccess(() -> Component.literal(
+                            "§a[Objuilder] schematic 放置完成 → " + total + " 格"), true);
+                }
+            });
         }, Minecraft.getInstance());
         return 1;
     }

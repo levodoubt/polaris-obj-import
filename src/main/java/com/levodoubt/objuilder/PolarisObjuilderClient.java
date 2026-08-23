@@ -67,6 +67,18 @@ public class PolarisObjuilderClient {
                 .then(Commands.argument("file", StringArgumentType.greedyString())
                         .executes(ctx -> ObjImportCommand.load(ctx.getSource(),
                                 StringArgumentType.getString(ctx, "file")))));
+        // /objschem <out> <file> —— 导出 schematic（Sponge v2）
+        dispatcher.register(Commands.literal("objschem")
+                .then(Commands.argument("out", StringArgumentType.string())
+                        .then(Commands.argument("file", StringArgumentType.greedyString())
+                                .executes(ctx -> ObjImportCommand.exportSchem(ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "file"),
+                                        StringArgumentType.getString(ctx, "out"))))));
+        // /objschemload <file> —— 读取 schematic 放置
+        dispatcher.register(Commands.literal("objschemload")
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.loadSchem(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file")))));
     }
 
     @SubscribeEvent
