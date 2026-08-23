@@ -19,22 +19,28 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * /objimport <mode> [file] — 客户端命令（单机验证用）
- *   mode: slice（子片空壳） / block（子块：子片 + 内部石头填充）
+ *   mode: slice（子片空壳）/ block（子片 + 内部石头）
  *   file: 可选，读取 config/polarisobjuilder/models/<file> 或绝对路径；缺省内置球体
- * 流程：切分 → 烘焙几何 → 清理旧区域（按模型 AABB）→ 摆放子片（+ 可选石头）→ 输出报告
+ * 流程：切分 → 烘焙几何 → 清理旧区域 → 按模式摆放 → 输出报告
  */
 public class ObjImportCommand {
 
     public static int run(CommandSourceStack source, String file, boolean fillMode) {
-        ClientLevel level = Minecraft.getInstance().level;
+        ClientLevel clientLevel = Minecraft.getInstance().level;
         var player = Minecraft.getInstance().player;
-        if (level == null || player == null) return 0;
+        if (clientLevel == null || player == null) return 0;
         long start = System.currentTimeMillis();
+
+        // 权威 world：单机（集成服务器）下用服务端 Level 摆放 → 自动同步客户端，
+        // 否则方块只在客户端世界存在，服务端挖不到 → 无法破坏/存档丢失
+        Level level = authorityWorld(clientLevel);
 
         // 1. 读取 / 生成网格
         ObjMesh mesh;
@@ -78,7 +84,7 @@ public class ObjImportCommand {
                     .setValue(PieceBlock.PIECE_C, p.pieceId() % 16);
             level.setBlock(base.offset(p.x(), p.y(), p.z()), state, 3);
         }
-        // 子块模式：内部格填石头
+        // block 模式：内部格填石头
         if (fillMode) {
             for (int[] cell : result.interior()) {
                 level.setBlock(base.offset(cell[0], cell[1], cell[2]), Blocks.STONE.defaultBlockState(), 3);
@@ -87,7 +93,8 @@ public class ObjImportCommand {
 
         // 5. 报告 + 写入调试统计
         Voxelizer.Stats s = result.stats();
-        LastImportStats.modelName = (fillMode ? "[子块] " : "[子片] ") + modelName;
+        String modeLabel = fillMode ? "子块" : "子片";
+        LastImportStats.modelName = "[" + modeLabel + "] " + modelName;
         LastImportStats.vertices = s.vertCount();
         LastImportStats.triangles = s.triCount();
         LastImportStats.gridCells = s.gridCells();
@@ -96,7 +103,7 @@ public class ObjImportCommand {
         LastImportStats.importTimeMs = System.currentTimeMillis() - start;
         source.sendSuccess(() -> Component.literal(String.format(
                 "§a[Objuilder] %s 导入完成 → 顶点 %d · 三角形 %d · 表面格 %d · 模板族 %d · 渲染三角形 %d · 内部石头 %d · 耗时 %dms",
-                fillMode ? "子块" : "子片",
+                modeLabel,
                 s.vertCount(), s.triCount(), s.gridCells(), s.pieceCount(), s.totalRenderTris(),
                 s.interiorCount(), LastImportStats.importTimeMs)), true);
         return 1;
@@ -105,6 +112,16 @@ public class ObjImportCommand {
     private static String neoforgePath() {
         return net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
                 .resolve("polarisobjuilder").toString();
+    }
+
+    /** 单机集成服务器下，客户端摆放必须走服务端 Level（setBlock 自动同步客户端）；否则仅客户端可见，服务端挖不到 */
+    private static Level authorityWorld(ClientLevel clientLevel) {
+        MinecraftServer server = Minecraft.getInstance().getSingleplayerServer();
+        if (server != null) {
+            Level lvl = server.getLevel(clientLevel.dimension());
+            if (lvl != null) return lvl;
+        }
+        return clientLevel;
     }
 
     /** 从摆放数据计算模型 AABB 范围 */
@@ -121,7 +138,7 @@ public class ObjImportCommand {
     }
 
     /** 按模型 AABB（膨胀 2 格）区域清理子片与石头——重启后也能清掉残留 */
-    private static void clearArea(ClientLevel level, BlockPos base, int[] b) {
+    private static void clearArea(Level level, BlockPos base, int[] b) {
         int pad = 2;
         for (int x = b[0] - pad; x <= b[1] + pad; x++) {
             for (int y = b[2] - pad; y <= b[3] + pad; y++) {

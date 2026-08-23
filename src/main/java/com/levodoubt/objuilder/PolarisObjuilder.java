@@ -29,12 +29,15 @@ public class PolarisObjuilder {
 
     public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(MODID);
 
-    /** 子片方块：无物品（不进 JEI / 创造栏），BlockState 编码模板族 id */
+    /**
+     * 不规则非物品方块：无物品（不进 JEI / 创造栏），BlockState 编码模板族 id。
+     * 带整格碰撞 + 正常挖掘强度 → 可像正常方块一样左键破坏。
+     * 不体素化：几何只含该格表面面（直接按面渲染）。
+     */
     public static final DeferredBlock<Block> OBJ_PIECE = BLOCKS.register("obj_piece",
             () -> new PieceBlock(BlockBehaviour.Properties.of()
                     .noOcclusion()
-                    .noCollission()
-                    .instabreak()));
+                    .strength(1.5f)));
 
     public PolarisObjuilder(IEventBus modEventBus, ModContainer modContainer) {
         BLOCKS.register(modEventBus);
