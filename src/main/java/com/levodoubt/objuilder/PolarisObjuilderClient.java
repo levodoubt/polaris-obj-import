@@ -25,10 +25,18 @@ public class PolarisObjuilderClient {
     public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
         dispatcher.register(Commands.literal("objimport")
-                .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null))
-                .then(Commands.argument("file", StringArgumentType.greedyString())
-                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(),
-                                StringArgumentType.getString(ctx, "file")))));
+                // /objimport slice [file] —— 子片空壳（默认）
+                .then(Commands.literal("slice")
+                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null, false))
+                        .then(Commands.argument("file", StringArgumentType.greedyString())
+                                .executes(ctx -> ObjImportCommand.run(ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "file"), false))))
+                // /objimport block [file] —— 子块（子片 + 内部石头）
+                .then(Commands.literal("block")
+                        .executes(ctx -> ObjImportCommand.run(ctx.getSource(), null, true))
+                        .then(Commands.argument("file", StringArgumentType.greedyString())
+                                .executes(ctx -> ObjImportCommand.run(ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "file"), true)))));
     }
 
     @SubscribeEvent

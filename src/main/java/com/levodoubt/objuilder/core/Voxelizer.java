@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 切分器：把三角网格按 MC 网格离散为"子片"，并聚合成模板族。
@@ -22,9 +23,11 @@ public class Voxelizer {
 
     public record Placement(int x, int y, int z, int pieceId) {}
 
-    public record Stats(int vertCount, int triCount, int gridCells, int pieceCount, long totalRenderTris) {}
+    public record Stats(int vertCount, int triCount, int gridCells, int pieceCount, long totalRenderTris,
+                        int interiorCount) {}
 
-    public record Result(Map<Integer, List<Triangle>> geometry, List<Placement> placements, Stats stats) {}
+    public record Result(Map<Integer, List<Triangle>> geometry, List<Placement> placements,
+                         List<int[]> interior, Stats stats) {}
 
     /** @param quant 量化精度（顶点坐标 × quant 取整），越大模板族越细 */
     public static Result voxelize(ObjMesh mesh, int quant) {
@@ -77,6 +80,17 @@ public class Voxelizer {
             placements.add(new Placement(p[0], p[1], p[2], id));
         }
 
+        // 内部格检测：被表面格完全包围（3D 洪水填充从边界外不可达）的格 → 子块模式填石头
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (int[] p : cellPos.values()) {
+            minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+            minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
+            minZ = Math.min(minZ, p[2]); maxZ = Math.max(maxZ, p[2]);
+        }
+        List<int[]> interior = findInteriorCells(cellTris.keySet(), minX, maxX, minY, maxY, minZ, maxZ);
+
         // 统计
         long totalTris = 0;
         for (Map.Entry<Integer, List<Triangle>> e : geometry.entrySet()) {
@@ -84,8 +98,57 @@ public class Voxelizer {
             totalTris += instances * e.getValue().size();
         }
         Stats stats = new Stats(mesh.vertices.size(), mesh.faces.size(), placements.size(),
-                geometry.size(), totalTris);
-        return new Result(geometry, placements, stats);
+                geometry.size(), totalTris, interior.size());
+        return new Result(geometry, placements, interior, stats);
+    }
+
+    /** 3D 洪水填充：从 AABB 边界外一格开始遍历可达格（表面格为实体阻断），
+     *  AABB 内非表面且不可达的格 = 内部格（模型实心部分） */
+    private static List<int[]> findInteriorCells(Set<Long> surface, int minX, int maxX,
+                                                 int minY, int maxY, int minZ, int maxZ) {
+        Set<Long> reachable = new java.util.HashSet<>();
+        java.util.ArrayDeque<long[]> queue = new java.util.ArrayDeque<>();
+        for (int x = minX - 1; x <= maxX + 1; x++) {
+            for (int y = minY - 1; y <= maxY + 1; y++) {
+                for (int z = minZ - 1; z <= maxZ + 1; z++) {
+                    if (x < minX || x > maxX || y < minY || y > maxY || z < minZ || z > maxZ) {
+                        long key = cellKey(x, y, z);
+                        if (!surface.contains(key) && reachable.add(key)) {
+                            queue.add(new long[]{x, y, z});
+                        }
+                    }
+                }
+            }
+        }
+        int[] dx = {1, -1, 0, 0, 0, 0};
+        int[] dy = {0, 0, 1, -1, 0, 0};
+        int[] dz = {0, 0, 0, 0, 1, -1};
+        while (!queue.isEmpty()) {
+            long[] c = queue.poll();
+            for (int d = 0; d < 6; d++) {
+                int nx = (int) c[0] + dx[d];
+                int ny = (int) c[1] + dy[d];
+                int nz = (int) c[2] + dz[d];
+                if (nx < minX - 1 || nx > maxX + 1 || ny < minY - 1 || ny > maxY + 1
+                        || nz < minZ - 1 || nz > maxZ + 1) continue;
+                long key = cellKey(nx, ny, nz);
+                if (!surface.contains(key) && reachable.add(key)) {
+                    queue.add(new long[]{nx, ny, nz});
+                }
+            }
+        }
+        List<int[]> interior = new ArrayList<>();
+        for (int x = minX; x <= maxX; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    long key = cellKey(x, y, z);
+                    if (!surface.contains(key) && !reachable.contains(key)) {
+                        interior.add(new int[]{x, y, z});
+                    }
+                }
+            }
+        }
+        return interior;
     }
 
     private static ObjMesh.Vec3 normal(ObjMesh.Vec3 a, ObjMesh.Vec3 b, ObjMesh.Vec3 c) {
@@ -144,8 +207,12 @@ public class Voxelizer {
                 a.z() + (b.z() - a.z()) * t);
     }
 
+    /**
+     * 无碰撞格编码：每坐标 21 位（支持 ±1,048,575），按位拼接。
+     * 不能用 XOR 哈希（不同坐标可能碰撞 → 几何错位 + 内部格误判）。
+     */
     private static long cellKey(int x, int y, int z) {
-        return (x * 73856093L) ^ (y * 19349663L) ^ (z * 83492791L);
+        return ((long) x & 0x1FFFFF) | (((long) y & 0x1FFFFF) << 21) | (((long) z & 0x1FFFFF) << 42);
     }
 
     /** FNV-1a 量化哈希：顶点坐标 × quant 取整后逐字节散列（含绕序，法线不同则族不同） */

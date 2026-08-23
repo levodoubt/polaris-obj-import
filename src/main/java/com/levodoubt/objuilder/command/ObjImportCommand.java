@@ -19,18 +19,18 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
- * /objimport [file] — 客户端命令（单机验证用）
- *  - 无参数：导入内置球体
- *  - 带参数：读取 config/polarisobjuilder/models/<file>
- * 切分 → 烘焙几何 → 清理旧区域 → 摆放子片方块 → 输出面数报告
+ * /objimport <mode> [file] — 客户端命令（单机验证用）
+ *   mode: slice（子片空壳） / block（子块：子片 + 内部石头填充）
+ *   file: 可选，读取 config/polarisobjuilder/models/<file> 或绝对路径；缺省内置球体
+ * 流程：切分 → 烘焙几何 → 清理旧区域（按模型 AABB）→ 摆放子片（+ 可选石头）→ 输出报告
  */
 public class ObjImportCommand {
-    private static final int AREA = 10; // 清理/摆放范围
 
-    public static int run(CommandSourceStack source, String file) {
+    public static int run(CommandSourceStack source, String file, boolean fillMode) {
         ClientLevel level = Minecraft.getInstance().level;
         var player = Minecraft.getInstance().player;
         if (level == null || player == null) return 0;
@@ -54,7 +54,7 @@ public class ObjImportCommand {
             mesh = SphereGenerator.sphere(4.5f, 24, 48, 0, 0, 0);
         }
 
-        // 2. 切分（表面格检测 + 模板族聚类）
+        // 2. 切分（表面格检测 + 模板族聚类 + 内部格检测）
         Voxelizer.Result result = Voxelizer.voxelize(mesh, 16);
         if (result.placements().isEmpty()) {
             source.sendFailure(Component.literal("切分为空：模型未覆盖任何完整格子"));
@@ -67,9 +67,10 @@ public class ObjImportCommand {
                 .apply(ResourceLocation.withDefaultNamespace("white"));
         PieceModelCache.bake(result.geometry(), sprite);
 
-        // 4. 清理旧区域 + 摆放子片方块
+        // 4. 清理旧区域（按模型 AABB 区域，重启后也能清掉上次残留的石头）+ 摆放
         BlockPos base = player.blockPosition().offset(7, 1, 7);
-        clearArea(level, base);
+        int[] bounds = computeBounds(result);
+        clearArea(level, base, bounds);
         for (Voxelizer.Placement p : result.placements()) {
             BlockState state = PolarisObjuilder.OBJ_PIECE.get().defaultBlockState()
                     .setValue(PieceBlock.PIECE_A, p.pieceId() / 256)
@@ -77,10 +78,16 @@ public class ObjImportCommand {
                     .setValue(PieceBlock.PIECE_C, p.pieceId() % 16);
             level.setBlock(base.offset(p.x(), p.y(), p.z()), state, 3);
         }
+        // 子块模式：内部格填石头
+        if (fillMode) {
+            for (int[] cell : result.interior()) {
+                level.setBlock(base.offset(cell[0], cell[1], cell[2]), Blocks.STONE.defaultBlockState(), 3);
+            }
+        }
 
         // 5. 报告 + 写入调试统计
         Voxelizer.Stats s = result.stats();
-        LastImportStats.modelName = modelName;
+        LastImportStats.modelName = (fillMode ? "[子块] " : "[子片] ") + modelName;
         LastImportStats.vertices = s.vertCount();
         LastImportStats.triangles = s.triCount();
         LastImportStats.gridCells = s.gridCells();
@@ -88,9 +95,10 @@ public class ObjImportCommand {
         LastImportStats.renderTris = s.totalRenderTris();
         LastImportStats.importTimeMs = System.currentTimeMillis() - start;
         source.sendSuccess(() -> Component.literal(String.format(
-                "§a[Objuilder] 导入完成 → 顶点 %d · 三角形 %d · 表面格 %d · 模板族 %d · 渲染三角形 %d · 耗时 %dms",
+                "§a[Objuilder] %s 导入完成 → 顶点 %d · 三角形 %d · 表面格 %d · 模板族 %d · 渲染三角形 %d · 内部石头 %d · 耗时 %dms",
+                fillMode ? "子块" : "子片",
                 s.vertCount(), s.triCount(), s.gridCells(), s.pieceCount(), s.totalRenderTris(),
-                LastImportStats.importTimeMs)), true);
+                s.interiorCount(), LastImportStats.importTimeMs)), true);
         return 1;
     }
 
@@ -99,13 +107,29 @@ public class ObjImportCommand {
                 .resolve("polarisobjuilder").toString();
     }
 
-    private static void clearArea(ClientLevel level, BlockPos base) {
-        for (int x = -AREA; x <= AREA; x++) {
-            for (int y = -AREA; y <= AREA; y++) {
-                for (int z = -AREA; z <= AREA; z++) {
+    /** 从摆放数据计算模型 AABB 范围 */
+    private static int[] computeBounds(Voxelizer.Result result) {
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (Voxelizer.Placement p : result.placements()) {
+            minX = Math.min(minX, p.x()); maxX = Math.max(maxX, p.x());
+            minY = Math.min(minY, p.y()); maxY = Math.max(maxY, p.y());
+            minZ = Math.min(minZ, p.z()); maxZ = Math.max(maxZ, p.z());
+        }
+        return new int[]{minX, maxX, minY, maxY, minZ, maxZ};
+    }
+
+    /** 按模型 AABB（膨胀 2 格）区域清理子片与石头——重启后也能清掉残留 */
+    private static void clearArea(ClientLevel level, BlockPos base, int[] b) {
+        int pad = 2;
+        for (int x = b[0] - pad; x <= b[1] + pad; x++) {
+            for (int y = b[2] - pad; y <= b[3] + pad; y++) {
+                for (int z = b[4] - pad; z <= b[5] + pad; z++) {
                     BlockPos pos = base.offset(x, y, z);
-                    if (level.getBlockState(pos).getBlock() == PolarisObjuilder.OBJ_PIECE.get()) {
-                        level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), 3);
+                    var block = level.getBlockState(pos).getBlock();
+                    if (block == PolarisObjuilder.OBJ_PIECE.get() || block == Blocks.STONE) {
+                        level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
                     }
                 }
             }
