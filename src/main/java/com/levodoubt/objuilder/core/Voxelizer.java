@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import com.levodoubt.objuilder.PolarisObjuilder;
+
 /**
  * 切分器：把三角网格按 MC 网格离散为"子片"，并聚合成模板族。
  * 每个子片三角形携带 UV（裁剪时随顶点插值），供渲染阶段采样贴图/烘顶点色。
@@ -36,10 +38,23 @@ public class Voxelizer {
     public record Result(Map<Integer, List<Triangle>> geometry, List<Placement> placements,
                          List<int[]> interior, Stats stats) {}
 
+    /** 进度回调：处理面数 → 总面数（0.0~1.0 百分比），null 表示禁用 */
+    @FunctionalInterface
+    public interface ProgressCallback {
+        void onProgress(int done, int total);
+    }
+
     /** @param quant 量化精度（顶点坐标 × quant 取整），越大模板族越细 */
     public static Result voxelize(ObjMesh mesh, int quant) {
+        return voxelize(mesh, quant, null);
+    }
+
+    /** 带进度回调的切分 */
+    public static Result voxelize(ObjMesh mesh, int quant, ProgressCallback progress) {
         Map<Long, List<Triangle>> cellTris = new HashMap<>();
         Map<Long, int[]> cellPos = new HashMap<>();
+        int totalFaces = mesh.faces.size();
+        int faceCount = 0;
         for (ObjMesh.Face f : mesh.faces) {
             ObjMesh.Vec3 v0 = mesh.vertices.get(f.v0);
             ObjMesh.Vec3 v1 = mesh.vertices.get(f.v1);
@@ -83,25 +98,29 @@ public class Voxelizer {
                     }
                 }
             }
+            faceCount++;
+            if (progress != null && (faceCount % 5000 == 0 || faceCount == totalFaces)) {
+                progress.onProgress(faceCount, totalFaces);
+            }
         }
 
-        // 聚类：旋转归一化哈希 → 模板族
-        // 思路：把每格的曲面几何"旋转归一化"（主法线对齐到 +Y）后再量化哈希，
-        // 相同形状的曲面（不同位置/朝向）归为一族 → 模板族数骤降 → 烘焙量骤降
+        // 聚类：位置哈希 → 模板族（每格独立，几何不混叠）
+        // 注：旋转归一化聚类（hashNormalizedGeometry）已实测无效（曲面碎片形状互不相同），
+        // 且会把不同格子的原始几何混入同一族 → 渲染解离分散。改回位置哈希。
         Map<Long, Integer> pieceIds = new HashMap<>();
         Map<Integer, List<Triangle>> geometry = new HashMap<>();
         List<Placement> placements = new ArrayList<>();
         for (Map.Entry<Long, List<Triangle>> e : cellTris.entrySet()) {
             List<Triangle> tris = e.getValue();
-            long hash = hashNormalizedGeometry(tris, quant);
+            long hash = hashGeometry(tris, quant);
             int id = pieceIds.computeIfAbsent(hash, k -> pieceIds.size());
-            // 存储归一化前的原始几何（渲染端当前仍按原几何渲染；族 id 仅用于统计收敛效果）
             geometry.computeIfAbsent(id, k -> new ArrayList<>()).addAll(tris);
             int[] p = cellPos.get(e.getKey());
             placements.add(new Placement(p[0], p[1], p[2], id));
         }
 
         // 内部格检测：被表面格完全包围的格 → 子块模式填石头
+        // 大包围盒（如放大模型 1600 万格）跳过——洪水填充遍历成本极高且无意义（薄壳无封闭内部）
         int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
         int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
         int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
@@ -110,13 +129,23 @@ public class Voxelizer {
             minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
             minZ = Math.min(minZ, p[2]); maxZ = Math.max(maxZ, p[2]);
         }
-        List<int[]> interior = findInteriorCells(cellTris.keySet(), minX, maxX, minY, maxY, minZ, maxZ);
+        long volume = (long) (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+        List<int[]> interior;
+        if (volume > 1_000_000L) {
+            PolarisObjuilder.LOGGER.info("[Voxelizer] 包围盒体积 {} 超过阈值，跳过内部格检测", volume);
+            interior = new ArrayList<>();
+        } else {
+            interior = findInteriorCells(cellTris.keySet(), minX, maxX, minY, maxY, minZ, maxZ);
+        }
 
-        // 统计（渲染三角形 = 模板族几何 × 实例数；收敛后此值应骤降）
+        // 统计（渲染三角形 = Σ 每族几何三角形 × 实例数；收敛后此值应骤降）
         long totalTris = 0;
+        int[] instanceCount = new int[pieceIds.size()];
+        for (Placement pl : placements) {
+            instanceCount[pl.pieceId()]++;
+        }
         for (Map.Entry<Integer, List<Triangle>> e : geometry.entrySet()) {
-            long instances = placements.stream().filter(pl -> pl.pieceId() == e.getKey()).count();
-            totalTris += instances * e.getValue().size();
+            totalTris += (long) instanceCount[e.getKey()] * e.getValue().size();
         }
         Stats stats = new Stats(mesh.vertices.size(), mesh.faces.size(), placements.size(),
                 geometry.size(), totalTris, interior.size());

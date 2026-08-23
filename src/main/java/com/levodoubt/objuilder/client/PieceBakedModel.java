@@ -2,21 +2,23 @@ package com.levodoubt.objuilder.client;
 
 import java.util.List;
 
-import com.levodoubt.objuilder.block.PieceBlock;
+import com.levodoubt.objuilder.block.ObjPieceBlockEntity;
 
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.renderer.block.model.ItemOverrides;
+import net.minecraft.client.renderer.block.model.ItemTransform;
 import net.minecraft.client.renderer.block.model.ItemTransforms;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.BakedModel;
-import net.minecraft.client.renderer.block.model.ItemTransform;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.state.BlockState;
+import net.neoforged.neoforge.client.model.data.ModelData;
 
 /**
- * 子片 BakedModel：按 BlockState 的模板族 id 从缓存取几何。
- * 关闭 AO（避免斜面光照格子化），usesBlockLight 保持方块光照。
+ * 子片 BakedModel：从 ModelData（BlockEntity 提供）读 pieceId 取几何。
+ * 突破 BlockState 4096 上限，支持任意大的族数。
  */
 public class PieceBakedModel implements BakedModel {
     private final TextureAtlasSprite particle;
@@ -27,17 +29,22 @@ public class PieceBakedModel implements BakedModel {
 
     @Override
     public List<BakedQuad> getQuads(BlockState state, Direction side, RandomSource random) {
+        return List.of();
+    }
+
+    @Override
+    public List<BakedQuad> getQuads(BlockState state, Direction side, RandomSource rand,
+                                    ModelData data, RenderType renderType) {
         if (side != null || state == null) return List.of();
-        int id = state.getValue(PieceBlock.PIECE_A) * 256
-                + state.getValue(PieceBlock.PIECE_B) * 16
-                + state.getValue(PieceBlock.PIECE_C);
+        int id = data.has(ObjPieceBlockEntity.PIECE_ID) ? data.get(ObjPieceBlockEntity.PIECE_ID) : -1;
+        if (id < 0) return List.of();
         List<BakedQuad> quads = PieceModelCache.getQuads(id);
         return quads != null ? quads : List.of();
     }
 
     @Override
     public boolean useAmbientOcclusion() {
-        return true; // 恢复 AO → MC 逐顶点计算环境光遮蔽 + 真实光照（斜面也随光源变化）
+        return true;
     }
 
     @Override

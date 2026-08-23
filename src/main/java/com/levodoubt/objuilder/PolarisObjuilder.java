@@ -41,6 +41,7 @@ public class PolarisObjuilder {
 
     public PolarisObjuilder(IEventBus modEventBus, ModContainer modContainer) {
         BLOCKS.register(modEventBus);
+        com.levodoubt.objuilder.block.ObjPieceBlockEntity.BLOCK_ENTITIES.register(modEventBus);
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
     }
 }

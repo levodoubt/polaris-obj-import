@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import com.levodoubt.objuilder.PolarisObjuilder;
-import com.levodoubt.objuilder.block.PieceBlock;
 import com.levodoubt.objuilder.client.PieceModelCache;
 import com.levodoubt.objuilder.core.BakeFormat;
 import com.levodoubt.objuilder.core.ObjMesh;
@@ -81,9 +80,19 @@ public class ObjImportCommand {
         File finalObjFile = objFile;
 
         source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台切分中..."), false);
-        // 后台线程：切分 + 烘焙几何缓存
+        // 后台线程：切分 + 烘焙几何缓存（带进度）
         CompletableFuture.supplyAsync(() -> {
-            Voxelizer.Result result = Voxelizer.voxelize(finalMesh, 16);
+            final int[] lastPct = {0};
+            Voxelizer.Result result = Voxelizer.voxelize(finalMesh, 16, (done, total) -> {
+                int pct = total > 0 ? done * 100 / total : 0;
+                if (pct - lastPct[0] >= 10 || pct == 100) {
+                    lastPct[0] = pct;
+                    int fp = pct;
+                    Minecraft.getInstance().execute(() ->
+                            source.sendSuccess(() -> Component.literal(
+                                    "§7[Objuilder] 切分中... " + fp + "%"), false));
+                }
+            });
             return result;
         }, Util.backgroundExecutor()).thenAcceptAsync(result -> {
             if (result == null || result.placements().isEmpty()) {
@@ -176,9 +185,29 @@ public class ObjImportCommand {
         source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台生成 schematic..."), false);
         CompletableFuture.supplyAsync(() -> {
             ObjMesh mesh = ObjParser.parse(inFile);
-            Voxelizer.Result result = Voxelizer.voxelize(mesh, 16);
+            // 进度回调：后台线程 → 主线程 → 聊天栏（每 5% 报一次）
+            final int[] lastPct = {0};
+            Voxelizer.Result result = Voxelizer.voxelize(mesh, 16, (done, total) -> {
+                int pct = total > 0 ? done * 100 / total : 0;
+                if (pct - lastPct[0] >= 5 || pct == 100) {
+                    lastPct[0] = pct;
+                    int fp = pct;
+                    Minecraft.getInstance().execute(() ->
+                            source.sendSuccess(() -> Component.literal(
+                                    "§7[Objuilder] 切分中... " + fp + "% (" + done + "/" + total + " 面)"), false));
+                }
+            });
             try {
-                Schematic.export(targetFile, result.placements(), result.interior(), mesh.texturePath);
+                Schematic.export(targetFile, result.geometry(), result.placements(),
+                        result.interior(), result.stats(), mesh.texturePath, pct -> {
+                    // 写文件阶段进度（后台线程 → 主线程 → 聊天栏）
+                    if (pct == 100 || pct % 10 == 0) {
+                        int fp = pct;
+                        Minecraft.getInstance().execute(() ->
+                                source.sendSuccess(() -> Component.literal(
+                                        "§7[Objuilder] 写文件... " + fp + "%"), false));
+                    }
+                });
                 return result.stats();
             } catch (Exception e) {
                 PolarisObjuilder.LOGGER.error("[Objuilder] schematic 导出失败", e);
@@ -222,60 +251,70 @@ public class ObjImportCommand {
             BlockPos base = Minecraft.getInstance().player.blockPosition().offset(3, 0, 3);
             int w = data.width(), h = data.height(), d = data.length();
 
-            // 烘焙贴图到缓存（若有）
-            String texPath = data.texturePath();
-            if (texPath != null && !texPath.isBlank()) {
+            // 烘焙几何 + 贴图到缓存（若 schematic 携带几何 → 与 /objimport 一致效果）
+            if (data.geometry() != null && !data.geometry().isEmpty()) {
                 TextureAtlasSprite sprite = Minecraft.getInstance()
                         .getTextureAtlas(TextureAtlas.LOCATION_BLOCKS)
                         .apply(ResourceLocation.fromNamespaceAndPath("minecraft", "block/white_concrete"));
-                NativeImage texture = loadTexturePath(texPath);
-                // 注：schematic 不含几何，仅含方块状态；几何需另行加载（这里只放方块）
-                PolarisObjuilder.LOGGER.info("[Objuilder] schematic 贴图引用: {}", texPath);
+                NativeImage texture = loadTexturePath(data.texturePath());
+                PieceModelCache.bake(data.geometry(), sprite, texture);
+                PolarisObjuilder.LOGGER.info("[Objuilder] schematic 几何已烘焙: {} 族",
+                        data.geometry().size());
+            } else {
+                PolarisObjuilder.LOGGER.warn("[Objuilder] schematic 无几何数据，子片显示为占位");
             }
 
-            // 分块放置
+            // 诊断日志：打印 sparse 坐标范围 + pieceId 范围
+            PolarisObjuilder.LOGGER.info("[Objuilder] schematic 尺寸 {}x{}x{} · 稀疏 {} 条 · 几何 {} 族",
+                    data.width(), data.height(), data.length(), data.sparsePieceId().length,
+                    data.geometry() != null ? data.geometry().size() : 0);
+            int[] mmx = {Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE};
+            int pmn = Integer.MAX_VALUE, pmx = Integer.MIN_VALUE;
+            for (int i = 0; i < data.sparsePieceId().length; i++) {
+                mmx[0] = Math.min(mmx[0], data.sparseX()[i]); mmx[1] = Math.max(mmx[1], data.sparseX()[i]);
+                mmx[2] = Math.min(mmx[2], data.sparseY()[i]); mmx[3] = Math.max(mmx[3], data.sparseY()[i]);
+                mmx[4] = Math.min(mmx[4], data.sparseZ()[i]); mmx[5] = Math.max(mmx[5], data.sparseZ()[i]);
+                pmn = Math.min(pmn, data.sparsePieceId()[i]); pmx = Math.max(pmx, data.sparsePieceId()[i]);
+            }
+            PolarisObjuilder.LOGGER.info("[Objuilder] sparse 坐标范围 X[{}..{}] Y[{}..{}] Z[{}..{}] · pieceId[{}..{}]",
+                    mmx[0], mmx[1], mmx[2], mmx[3], mmx[4], mmx[5], pmn, pmx);
+
+            // 分块放置（稀疏：pieceId >= 0 → obj_piece+BE，-1 → 石头）
             Minecraft mc = Minecraft.getInstance();
             var idx = new java.util.concurrent.atomic.AtomicInteger(0);
-            int total = w * h * d;
-            mc.execute(() -> {
-                int placed = 0;
-                while (idx.get() < total && placed < BLOCKS_PER_TICK) {
-                    int i = idx.getAndIncrement();
-                    int x = i % w;
-                    int y = (i / w) % h;
-                    int z = i / (w * h);
-                    byte paletteIdx = data.blockData()[i];
-                    if (paletteIdx == 0) continue; // air
-                    BlockState state = Schematic.resolveBlockState(data, paletteIdx & 0xFF);
-                    level.setBlock(base.offset(x, y, z), state, 3);
-                    placed++;
-                }
-                if (idx.get() < total) {
-                    mc.execute(() -> {
-                        int placed2 = 0;
-                        while (idx.get() < total && placed2 < BLOCKS_PER_TICK) {
-                            int i = idx.getAndIncrement();
-                            int x = i % w;
-                            int y = (i / w) % h;
-                            int z = i / (w * h);
-                            byte paletteIdx = data.blockData()[i];
-                            if (paletteIdx == 0) continue;
-                            level.setBlock(base.offset(x, y, z),
-                                    Schematic.resolveBlockState(data, paletteIdx & 0xFF), 3);
-                            placed2++;
-                        }
-                        if (idx.get() >= total) {
-                            source.sendSuccess(() -> Component.literal(
-                                    "§a[Objuilder] schematic 放置完成 → " + total + " 格"), true);
-                        }
-                    });
-                } else {
-                    source.sendSuccess(() -> Component.literal(
-                            "§a[Objuilder] schematic 放置完成 → " + total + " 格"), true);
-                }
-            });
+            int total = data.sparsePieceId().length;
+            mc.execute(() -> placeSchemBatch(level, base, data, idx, total, source, mc));
         }, Minecraft.getInstance());
         return 1;
+    }
+
+    private static void placeSchemBatch(Level level, BlockPos base, Schematic.SchematicData data,
+                                        java.util.concurrent.atomic.AtomicInteger idx, int total,
+                                        CommandSourceStack source, Minecraft mc) {
+        int placed = 0;
+        while (idx.get() < total && placed < BLOCKS_PER_TICK) {
+            int i = idx.getAndIncrement();
+            int x = data.sparseX()[i];
+            int y = data.sparseY()[i];
+            int z = data.sparseZ()[i];
+            int pieceId = data.sparsePieceId()[i];
+            BlockPos pos = base.offset(x, y, z);
+            if (pieceId == Schematic.STONE_MARKER) {
+                level.setBlock(pos, Blocks.STONE.defaultBlockState(), 3);
+            } else {
+                level.setBlock(pos, PolarisObjuilder.OBJ_PIECE.get().defaultBlockState(), 3);
+                if (level.getBlockEntity(pos) instanceof com.levodoubt.objuilder.block.ObjPieceBlockEntity be) {
+                    be.setPieceId(pieceId);
+                }
+            }
+            placed++;
+        }
+        if (idx.get() < total) {
+            mc.execute(() -> placeSchemBatch(level, base, data, idx, total, source, mc));
+        } else {
+            source.sendSuccess(() -> Component.literal(
+                    "§a[Objuilder] schematic 放置完成 → " + total + " 格"), true);
+        }
     }
 
     /** 快速摆放：读取 .objb → 分块摆放（不切分） */
@@ -333,11 +372,11 @@ public class ObjImportCommand {
             int placed = 0;
             while (it.hasNext() && placed < BLOCKS_PER_TICK) {
                 Voxelizer.Placement p = it.next();
-                BlockState state = PolarisObjuilder.OBJ_PIECE.get().defaultBlockState()
-                        .setValue(PieceBlock.PIECE_A, p.pieceId() / 256)
-                        .setValue(PieceBlock.PIECE_B, (p.pieceId() / 16) % 16)
-                        .setValue(PieceBlock.PIECE_C, p.pieceId() % 16);
-                level.setBlock(base.offset(p.x(), p.y(), p.z()), state, 3);
+                BlockPos pos = base.offset(p.x(), p.y(), p.z());
+                level.setBlock(pos, PolarisObjuilder.OBJ_PIECE.get().defaultBlockState(), 3);
+                if (level.getBlockEntity(pos) instanceof com.levodoubt.objuilder.block.ObjPieceBlockEntity be) {
+                    be.setPieceId(p.pieceId());
+                }
                 placed++;
             }
             if (!it.hasNext() && intIt != null) {

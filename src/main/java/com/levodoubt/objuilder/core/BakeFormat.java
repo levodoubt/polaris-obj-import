@@ -111,27 +111,27 @@ public class BakeFormat {
         }
     }
 
-    private static void writeVec3(DataOutputStream out, ObjMesh.Vec3 v) throws IOException {
+    public static void writeVec3(DataOutputStream out, ObjMesh.Vec3 v) throws IOException {
         out.writeFloat(v.x()); out.writeFloat(v.y()); out.writeFloat(v.z());
     }
 
-    private static void writeVec3Opt(DataOutputStream out, ObjMesh.Vec3 v) throws IOException {
+    public static void writeVec3Opt(DataOutputStream out, ObjMesh.Vec3 v) throws IOException {
         if (v == null) { out.writeBoolean(false); } else { out.writeBoolean(true); writeVec3(out, v); }
     }
 
-    private static void writeVec2Opt(DataOutputStream out, ObjMesh.Vec2 v) throws IOException {
+    public static void writeVec2Opt(DataOutputStream out, ObjMesh.Vec2 v) throws IOException {
         if (v == null) { out.writeBoolean(false); } else { out.writeBoolean(true); out.writeFloat(v.u()); out.writeFloat(v.v()); }
     }
 
-    private static ObjMesh.Vec3 readVec3(DataInputStream in) throws IOException {
+    public static ObjMesh.Vec3 readVec3(DataInputStream in) throws IOException {
         return new ObjMesh.Vec3(in.readFloat(), in.readFloat(), in.readFloat());
     }
 
-    private static ObjMesh.Vec3 readVec3Opt(DataInputStream in) throws IOException {
+    public static ObjMesh.Vec3 readVec3Opt(DataInputStream in) throws IOException {
         return in.readBoolean() ? readVec3(in) : null;
     }
 
-    private static ObjMesh.Vec2 readVec2Opt(DataInputStream in) throws IOException {
+    public static ObjMesh.Vec2 readVec2Opt(DataInputStream in) throws IOException {
         return in.readBoolean() ? new ObjMesh.Vec2(in.readFloat(), in.readFloat()) : null;
     }
 }
