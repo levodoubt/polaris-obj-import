@@ -3,10 +3,13 @@ package com.levodoubt.objuilder.command;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import com.levodoubt.objuilder.PolarisObjuilder;
+import com.levodoubt.objuilder.client.DomainModelCache;
 import com.levodoubt.objuilder.client.PieceModelCache;
 import com.levodoubt.objuilder.core.BakeFormat;
 import com.levodoubt.objuilder.core.ObjMesh;
@@ -15,6 +18,7 @@ import com.levodoubt.objuilder.core.Schematic;
 import com.levodoubt.objuilder.core.SphereGenerator;
 import com.levodoubt.objuilder.core.Voxelizer;
 import com.levodoubt.objuilder.debug.LastImportStats;
+import com.levodoubt.objuilder.entity.DomainEntity;
 import com.mojang.blaze3d.platform.NativeImage;
 
 import net.minecraft.Util;
@@ -29,6 +33,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LightBlock;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
@@ -430,6 +435,76 @@ public class ObjImportCommand {
         return loadTexturePath(texFile.getAbsolutePath());
     }
 
+    /** 提取模型各材质的贴图路径（索引 = materialId，无贴图 = null）。单材质模型回退 texturePath。 */
+    private static List<String> materialTexturePaths(ObjMesh mesh) {
+        List<String> paths = new ArrayList<>();
+        if (mesh.materials.isEmpty()) {
+            if (mesh.texturePath != null) paths.add(mesh.texturePath);
+            return paths;
+        }
+        for (ObjMesh.Material m : mesh.materials) {
+            paths.add(m.mapKd);
+        }
+        return paths;
+    }
+
+    /** 提取模型各材质的漫反射颜色（索引 = materialId，[r,g,b]）。单材质/无材质 → 空列表。 */
+    private static List<float[]> materialColors(ObjMesh mesh) {
+        List<float[]> colors = new ArrayList<>();
+        for (ObjMesh.Material m : mesh.materials) {
+            colors.add(new float[]{m.kdR, m.kdG, m.kdB});
+        }
+        return colors;
+    }
+
+    /** 提取模型各材质的自发光颜色（索引 = materialId，[r,g,b]）。 */
+    private static List<float[]> materialEmissive(ObjMesh mesh) {
+        List<float[]> emissive = new ArrayList<>();
+        for (ObjMesh.Material m : mesh.materials) {
+            emissive.add(new float[]{m.keR, m.keG, m.keB});
+        }
+        return emissive;
+    }
+
+    /** 批量加载多材质贴图（索引 = materialId，无贴图 = null）。objFile 用于解析相对路径与失效绝对路径回退。 */
+    private static List<NativeImage> loadTextures(List<String> paths, File objFile) {
+        List<NativeImage> images = new ArrayList<>();
+        if (paths == null) return images;
+        for (String path : paths) {
+            if (path == null || path.isBlank()) {
+                images.add(null);
+                continue;
+            }
+            images.add(loadTextureResolved(path, objFile));
+        }
+        return images;
+    }
+
+    /**
+     * 解析贴图路径并加载，依次尝试：
+     * 1. 原路径（绝对或相对）
+     * 2. 相对 OBJ 目录（objFile 父目录 + path）
+     * 3. OBJ 目录下按文件名（处理 MTL 中失效的绝对路径，如 C:/1.png → <obj目录>/1.png）
+     * 4. OBJ 目录/Textures 下按文件名（Blender 常见贴图子目录）
+     */
+    private static NativeImage loadTextureResolved(String path, File objFile) {
+        File p = new File(path);
+        List<File> candidates = new ArrayList<>();
+        candidates.add(p);
+        if (objFile != null) {
+            File parent = objFile.getParentFile();
+            candidates.add(new File(parent, path));
+            candidates.add(new File(parent, p.getName()));
+            candidates.add(new File(new File(parent, "Textures"), p.getName()));
+        }
+        for (File c : candidates) {
+            if (!c.exists()) continue;
+            NativeImage img = loadTexturePath(c.getAbsolutePath());
+            if (img != null) return img;
+        }
+        return null;
+    }
+
     private static NativeImage loadTexturePath(String path) {
         if (path == null || path.isBlank()) return null;
         File texFile = new File(path);
@@ -499,6 +574,202 @@ public class ObjImportCommand {
                     }
                 }
             }
+        }
+    }
+
+    // ===================== 共面域（纯视觉模式） =====================
+
+    /**
+     * /objdomain [scale] [file] — 共面域纯视觉导入：
+     * 切分 → 共面域合并 → 域实体摆放（无碰撞，平滑法线，光影兼容）。
+     * 解决"一格一几何"渲染量爆炸（大平面 1.5 亿 → 几十万三角形）。
+     */
+    public static int domain(CommandSourceStack source, String file, float scale) {
+        ClientLevel clientLevel = Minecraft.getInstance().level;
+        var player = Minecraft.getInstance().player;
+        if (clientLevel == null || player == null) return 0;
+
+        ObjMesh mesh;
+        File objFile = null;
+        String modelName = "内置球体";
+        if (file != null && !file.isBlank()) {
+            File f = new File(file);
+            if (!f.isAbsolute()) {
+                f = new File(new File(neoforgePath(), "models"), file);
+            }
+            if (!f.exists()) {
+                source.sendFailure(Component.literal("找不到模型: " + f.getAbsolutePath()));
+                return 0;
+            }
+            mesh = ObjParser.parse(f);
+            objFile = f;
+            modelName = f.getName();
+        } else {
+            mesh = SphereGenerator.sphere(4.5f, 24, 48, 0, 0, 0);
+        }
+        if (scale != 1.0f) {
+            for (int i = 0; i < mesh.vertices.size(); i++) {
+                ObjMesh.Vec3 v = mesh.vertices.get(i);
+                mesh.vertices.set(i, new ObjMesh.Vec3(v.x() * scale, v.y() * scale, v.z() * scale));
+            }
+        }
+        ObjMesh finalMesh = mesh;
+        String finalName = modelName;
+        File finalObjFile = objFile;
+
+        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台共面域切分中..."), false);
+        CompletableFuture.supplyAsync(() -> {
+            final int[] lastPct = {0};
+            Voxelizer.DomainResult result = Voxelizer.visualize(finalMesh, (done, total) -> {
+                int pct = total > 0 ? done * 100 / total : 0;
+                if (pct - lastPct[0] >= 10 || pct == 100) {
+                    lastPct[0] = pct;
+                    int fp = pct;
+                    Minecraft.getInstance().execute(() ->
+                            source.sendSuccess(() -> Component.literal(
+                                    "§7[Objuilder] 切分中... " + fp + "%"), false));
+                }
+            });
+            return result;
+        }, Util.backgroundExecutor()).thenAcceptAsync(result -> {
+            if (result == null || result.domains().isEmpty()) {
+                source.sendFailure(Component.literal("切分为空：模型未覆盖任何共面表面"));
+                return;
+            }
+            // 烘焙域几何到缓存：注册贴图为动态纹理（逐像素贴图），几何与贴图分离（多材质）
+            int modelId = DomainModelCache.nextModelId();
+            TextureAtlasSprite sprite = Minecraft.getInstance()
+                    .getTextureAtlas(TextureAtlas.LOCATION_BLOCKS)
+                    .apply(ResourceLocation.fromNamespaceAndPath("minecraft", "block/white_concrete"));
+            List<NativeImage> textures = loadTextures(materialTexturePaths(finalMesh), finalObjFile);
+            Map<Integer, ResourceLocation> texMap = DomainModelCache.registerTextures(textures);
+            DomainModelCache.setMaterialColors(modelId, materialColors(finalMesh));
+            DomainModelCache.setMaterialEmissive(modelId, materialEmissive(finalMesh));
+            DomainModelCache.bake(modelId, result.domains(), sprite, texMap);
+
+            // 摆放域实体（多模型共存，独立缓存，不清除旧实体）
+            Level level = authorityWorld(Minecraft.getInstance().level);
+            BlockPos base = Minecraft.getInstance().player.blockPosition().offset(7, 1, 7);
+            spawnDomains(level, base, modelId, result.domains());
+            spawnLightCells(level, base, result.lightCells());
+
+            LastImportStats.modelName = "[纯视觉] " + finalName;
+            LastImportStats.gridCells = result.faceCount();
+            LastImportStats.pieceCount = result.domains().size();
+            LastImportStats.renderTris = result.totalTris();
+            LastImportStats.importTimeMs = 0;
+
+            source.sendSuccess(() -> Component.literal(String.format(
+                    "§a[Objuilder] 纯视觉导入完成 → %s · 三角形 %d（1 实体整体渲染）",
+                    finalName, result.totalTris())), true);
+        }, Minecraft.getInstance());
+        return 1;
+    }
+
+    /** 共面域离线导出：后台切分+合并 → 保存 .objb（POBJD） */
+    public static int domainExport(CommandSourceStack source, String file, String out) {
+        File f = new File(file);
+        if (!f.isAbsolute()) f = new File(new File(neoforgePath(), "models"), file);
+        if (!f.exists()) {
+            source.sendFailure(Component.literal("找不到模型: " + f.getAbsolutePath()));
+            return 0;
+        }
+        File outFile = new File(out);
+        if (!outFile.isAbsolute()) outFile = new File(neoforgePath(), out);
+        final File inFile = f;
+        final File targetFile = outFile;
+
+        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台共面域烘焙中..."), false);
+        CompletableFuture.supplyAsync(() -> {
+            ObjMesh mesh = ObjParser.parse(inFile);
+            Voxelizer.DomainResult result = Voxelizer.visualize(mesh, null);
+            try {
+                BakeFormat.saveDomains(targetFile, result, materialTexturePaths(mesh),
+                        materialColors(mesh), materialEmissive(mesh));
+                return result;
+            } catch (Exception e) {
+                PolarisObjuilder.LOGGER.error("[Objuilder] 共面域烘焙导出失败", e);
+                return null;
+            }
+        }, Util.backgroundExecutor()).thenAcceptAsync(result -> {
+            if (result == null) {
+                source.sendFailure(Component.literal("共面域烘焙导出失败，详见日志"));
+            } else {
+                source.sendSuccess(() -> Component.literal(String.format(
+                        "§a[Objuilder] 纯视觉烘焙完成 → %s (三角形 %d)",
+                        targetFile.getAbsolutePath(), result.totalTris())), true);
+            }
+        }, Minecraft.getInstance());
+        return 1;
+    }
+
+    /** 共面域加载：读取 POBJD → 域实体摆放 */
+    public static int domainLoad(CommandSourceStack source, String file) {
+        File f = new File(file);
+        if (!f.isAbsolute()) f = new File(neoforgePath(), file);
+        if (!f.exists()) {
+            source.sendFailure(Component.literal("找不到烘焙文件: " + f.getAbsolutePath()));
+            return 0;
+        }
+        final File inFile = f;
+        source.sendSuccess(() -> Component.literal("§7[Objuilder] 读取共面域烘焙文件中..."), false);
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return BakeFormat.loadDomains(inFile);
+            } catch (Exception e) {
+                PolarisObjuilder.LOGGER.error("[Objuilder] 读取共面域烘焙文件失败", e);
+                return null;
+            }
+        }, Util.backgroundExecutor()).thenAcceptAsync(baked -> {
+            if (baked == null) {
+                source.sendFailure(Component.literal("读取共面域烘焙文件失败，详见日志"));
+                return;
+            }
+            int modelId = DomainModelCache.nextModelId();
+            TextureAtlasSprite sprite = Minecraft.getInstance()
+                    .getTextureAtlas(TextureAtlas.LOCATION_BLOCKS)
+                    .apply(ResourceLocation.fromNamespaceAndPath("minecraft", "block/white_concrete"));
+            List<NativeImage> textures = loadTextures(baked.texturePaths(), null);
+            Map<Integer, ResourceLocation> texMap = DomainModelCache.registerTextures(textures);
+            DomainModelCache.setMaterialColors(modelId, baked.materialColors());
+            DomainModelCache.setMaterialEmissive(modelId, baked.materialEmissive());
+            DomainModelCache.bake(modelId, baked.domains(), sprite, texMap);
+
+            Level level = authorityWorld(Minecraft.getInstance().level);
+            BlockPos base = Minecraft.getInstance().player.blockPosition().offset(7, 1, 7);
+            spawnDomains(level, base, modelId, baked.domains());
+            spawnLightCells(level, base, baked.stats().lightCells());
+
+            Voxelizer.DomainResult s = baked.stats();
+            LastImportStats.modelName = "[纯视觉] " + inFile.getName();
+            LastImportStats.gridCells = s.faceCount();
+            LastImportStats.pieceCount = s.domains().size();
+            LastImportStats.renderTris = s.totalTris();
+            source.sendSuccess(() -> Component.literal(String.format(
+                    "§a[Objuilder] 纯视觉摆放完成 → 三角形 %d（1 实体）",
+                    s.totalTris())), true);
+        }, Minecraft.getInstance());
+        return 1;
+    }
+
+    /** 摆放域实体：实体位置 = 基准点 + 域原点，域几何为域局部坐标。所有实体共享同一 modelId（独立缓存） */
+    private static void spawnDomains(Level level, BlockPos base, int modelId, List<Voxelizer.Domain> domains) {
+        double bx = base.getX(), by = base.getY(), bz = base.getZ();
+        for (Voxelizer.Domain d : domains) {
+            DomainEntity e = new DomainEntity(PolarisObjuilder.DOMAIN_ENTITY.get(), level);
+            e.setPos(bx + d.ox(), by + d.oy(), bz + d.oz());
+            e.setDomainId(modelId);
+            level.addFreshEntity(e);
+        }
+    }
+
+    /** 摆放光源方块：在自发光格放置 minecraft:light（level=光照等级，跟随 Ke 强度） */
+    private static void spawnLightCells(Level level, BlockPos base, List<Voxelizer.LightCell> lightCells) {
+        if (lightCells == null || lightCells.isEmpty()) return;
+        BlockState lightState = Blocks.LIGHT.defaultBlockState();
+        for (Voxelizer.LightCell lc : lightCells) {
+            BlockPos pos = base.offset(lc.x(), lc.y(), lc.z());
+            level.setBlock(pos, lightState.setValue(LightBlock.LEVEL, lc.level()), 3);
         }
     }
 }

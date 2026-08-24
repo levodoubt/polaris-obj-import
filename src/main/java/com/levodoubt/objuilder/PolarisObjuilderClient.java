@@ -79,6 +79,32 @@ public class PolarisObjuilderClient {
                 .then(Commands.argument("file", StringArgumentType.greedyString())
                         .executes(ctx -> ObjImportCommand.loadSchem(ctx.getSource(),
                                 StringArgumentType.getString(ctx, "file")))));
+        // /objdomain [scale] [file] —— 共面域纯视觉导入（大平面几何合并 → 实体渲染）
+        var domainScale = Commands.argument("scale", FloatArgumentType.floatArg(0.01f, 100f))
+                .executes(ctx -> ObjImportCommand.domain(ctx.getSource(), null,
+                        FloatArgumentType.getFloat(ctx, "scale")))
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.domain(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file"),
+                                FloatArgumentType.getFloat(ctx, "scale"))));
+        dispatcher.register(Commands.literal("objdomain")
+                .executes(ctx -> ObjImportCommand.domain(ctx.getSource(), null, 1f))
+                .then(domainScale)
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.domain(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file"), 1f))));
+        // /objdomainexport <out> <file> —— 共面域离线烘焙导出
+        dispatcher.register(Commands.literal("objdomainexport")
+                .then(Commands.argument("out", StringArgumentType.string())
+                        .then(Commands.argument("file", StringArgumentType.greedyString())
+                                .executes(ctx -> ObjImportCommand.domainExport(ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "file"),
+                                        StringArgumentType.getString(ctx, "out"))))));
+        // /objdomainload <file> —— 读取共面域烘焙文件摆放
+        dispatcher.register(Commands.literal("objdomainload")
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.domainLoad(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file")))));
     }
 
     @SubscribeEvent

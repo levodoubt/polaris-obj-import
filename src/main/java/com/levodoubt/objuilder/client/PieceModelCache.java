@@ -71,8 +71,8 @@ public class PieceModelCache {
         return new BakedQuad(data, -1, dir, sprite, true);
     }
 
-    /** 顶点色：UV 采样贴图 → 颜色；无贴图则 UV 可视化色；无 UV 则纯白 */
-    private static int colorForVertex(Voxelizer.Triangle t, int i, NativeImage texture) {
+    /** 顶点色：UV 采样贴图 → 颜色；无贴图则 UV 可视化色；无 UV 则纯白（供域渲染复用） */
+    static int vertexColor(Voxelizer.Triangle t, int i, NativeImage texture) {
         ObjMesh.Vec2 uv = t.uv(i);
         if (uv != null && texture != null) {
             // UV 平铺（取模到 [0,1]）+ v 翻转（OBJ v 底=0，图像 y 顶=0）
@@ -89,6 +89,10 @@ public class PieceModelCache {
             return 0xFF000000 | (0x80 << 16) | (g << 8) | r; // ABGR
         }
         return 0xFFFFFFFF; // 无 UV：纯白（配合 AO 光照显示形状）
+    }
+
+    private static int colorForVertex(Voxelizer.Triangle t, int i, NativeImage texture) {
+        return vertexColor(t, i, texture);
     }
 
     private static float wrap01(float v) {

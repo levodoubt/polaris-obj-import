@@ -27,14 +27,46 @@ public class ObjMesh {
     public final List<Vec2> uvs = new ArrayList<>();
     public final List<Vec3> normals = new ArrayList<>();
     public final List<Face> faces = new ArrayList<>();
-    /** map_Kd 贴图文件路径（可为 null） */
+    /** map_Kd 贴图文件路径（可为 null）——兼容旧单材质；多材质见 materials */
     public String texturePath = null;
+    /** 材质列表（多材质支持）：按解析顺序，索引即 materialId */
+    public final List<Material> materials = new ArrayList<>();
 
-    /** 三角形面：3 个顶点索引 + 3 个 UV 索引 + 3 个法线索引（-1 = 无） */
+    /** 材质：名称 + map_Kd 贴图路径（可为 null）+ Kd 漫反射颜色（默认白）+ Ke 自发光颜色（默认黑=无） */
+    public static class Material {
+        public final String name;
+        public final String mapKd;
+        public final float kdR, kdG, kdB;
+        public final float keR, keG, keB;
+
+        public Material(String name, String mapKd) {
+            this(name, mapKd, 1f, 1f, 1f, 0f, 0f, 0f);
+        }
+
+        public Material(String name, String mapKd, float kdR, float kdG, float kdB) {
+            this(name, mapKd, kdR, kdG, kdB, 0f, 0f, 0f);
+        }
+
+        public Material(String name, String mapKd, float kdR, float kdG, float kdB,
+                        float keR, float keG, float keB) {
+            this.name = name;
+            this.mapKd = mapKd;
+            this.kdR = kdR;
+            this.kdG = kdG;
+            this.kdB = kdB;
+            this.keR = keR;
+            this.keG = keG;
+            this.keB = keB;
+        }
+    }
+
+    /** 三角形面：3 个顶点索引 + 3 个 UV 索引 + 3 个法线索引（-1 = 无）+ 材质索引（-1 = 无材质） */
     public static class Face {
         public final int v0, v1, v2;
         public final int t0, t1, t2;
         public final int n0, n1, n2;
+        /** 材质索引（-1 = 无材质），指向 mesh.materials */
+        public int materialId = -1;
 
         public Face(int v0, int v1, int v2, int t0, int t1, int t2) {
             this(v0, v1, v2, t0, t1, t2, -1, -1, -1);

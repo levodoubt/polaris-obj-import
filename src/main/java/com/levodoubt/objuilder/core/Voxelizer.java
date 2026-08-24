@@ -15,7 +15,15 @@ import com.levodoubt.objuilder.PolarisObjuilder;
 public class Voxelizer {
     public record Triangle(ObjMesh.Vec3 a, ObjMesh.Vec3 b, ObjMesh.Vec3 c, ObjMesh.Vec3 n,
                            ObjMesh.Vec3 na, ObjMesh.Vec3 nb, ObjMesh.Vec3 nc,
-                           ObjMesh.Vec2 uva, ObjMesh.Vec2 uvb, ObjMesh.Vec2 uvc) {
+                           ObjMesh.Vec2 uva, ObjMesh.Vec2 uvb, ObjMesh.Vec2 uvc,
+                           int materialId) {
+        /** 兼容旧构造：无材质（materialId = -1） */
+        public Triangle(ObjMesh.Vec3 a, ObjMesh.Vec3 b, ObjMesh.Vec3 c, ObjMesh.Vec3 n,
+                        ObjMesh.Vec3 na, ObjMesh.Vec3 nb, ObjMesh.Vec3 nc,
+                        ObjMesh.Vec2 uva, ObjMesh.Vec2 uvb, ObjMesh.Vec2 uvc) {
+            this(a, b, c, n, na, nb, nc, uva, uvb, uvc, -1);
+        }
+
         public ObjMesh.Vec3 p(int i) {
             return switch (i) { case 0 -> a; case 1 -> b; default -> c; };
         }
@@ -336,5 +344,101 @@ public class Voxelizer {
         h ^= (v >>> 16) & 0xFF; h *= 0x100000001b3L;
         h ^= (v >>> 24) & 0xFF; h *= 0x100000001b3L;
         return h;
+    }
+
+    // ===================== 共面域合并（纯视觉模式） =====================
+    //
+    // 目标：把"一格一几何"的碎片按【共面连通域】合并成大平面，每个域一份几何。
+    // 关键：不做格裁剪，直接在 OBJ 原始三角形上做"共面连通域"聚类。
+    //   - 相邻三角形（共享边）+ 法线相近 → 同一平面 → 同一域
+    //   - 每个域保留原始三角形（几何量 = 原始面数，骤降 99%+）
+    //   - 无裁剪 → 无 T-junction 裂缝 → 无"连接紊乱"
+    // 旋转大平面（非轴对齐）无法用格方块表达 → 域几何走实体渲染（BER），
+    // 顺带保留顶点法线 → 光影下平滑光照。
+
+    /** 共面域：一个共面连通区域。tris 为域局部坐标（相对域原点 ox,oy,oz），法线为域平面法线 */
+    public record Domain(int id, int ox, int oy, int oz, ObjMesh.Vec3 normal, List<Triangle> tris) {}
+
+    /** 自发光格：自发光材质（Ke>0）三角形覆盖的格（世界格坐标）+ 光照等级 1~15 */
+    public record LightCell(int x, int y, int z, int level) {}
+
+    /** 共面域合并结果：域列表 + 统计 + 自发光格 */
+    public record DomainResult(List<Domain> domains, int totalTris, int vertCount, int faceCount,
+                               List<LightCell> lightCells) {
+    }
+
+    /**
+     * 纯视觉切分：把整个 OBJ 模型作为【单个整体】渲染（不切格、不分域）。
+     * - 几何 = 原始三角形（局部坐标，相对模型 AABB 中心）
+     * - 实体位置 = 模型 AABB 中心；1 个实体承载全部几何
+     * - 保留顶点法线（无则回退面法线）→ 光影下平滑光照
+     * 关键：实体位置取【模型中心】而非最小角，使实体离模型各部分距离最小，
+     * 避免大模型因实体位置落在模型一角、超出渲染/模拟距离而被剔除 → 模型消失。
+     */
+    public static DomainResult visualize(ObjMesh mesh, ProgressCallback progress) {
+        int n = mesh.faces.size();
+
+        // 模型 AABB（中心 = 实体位置，格对齐）
+        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, minZ = Float.MAX_VALUE;
+        float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+        for (ObjMesh.Vec3 v : mesh.vertices) {
+            minX = Math.min(minX, v.x()); maxX = Math.max(maxX, v.x());
+            minY = Math.min(minY, v.y()); maxY = Math.max(maxY, v.y());
+            minZ = Math.min(minZ, v.z()); maxZ = Math.max(maxZ, v.z());
+        }
+        int ox = (int) Math.floor((minX + maxX) / 2.0);
+        int oy = (int) Math.floor((minY + maxY) / 2.0);
+        int oz = (int) Math.floor((minZ + maxZ) / 2.0);
+
+        List<Triangle> tris = new ArrayList<>(n);
+        // 自发光格收集：自发光材质（Ke>0）三角形顶点所在格（世界格坐标），level 取 Ke 最大分量
+        Map<Long, LightCell> lightMap = new HashMap<>();
+        for (int fi = 0; fi < n; fi++) {
+            ObjMesh.Face f = mesh.faces.get(fi);
+            ObjMesh.Vec3 wa = mesh.vertices.get(f.v0);
+            ObjMesh.Vec3 wb = mesh.vertices.get(f.v1);
+            ObjMesh.Vec3 wc = mesh.vertices.get(f.v2);
+            ObjMesh.Vec3 a = wa.add(-ox, -oy, -oz);
+            ObjMesh.Vec3 b = wb.add(-ox, -oy, -oz);
+            ObjMesh.Vec3 c = wc.add(-ox, -oy, -oz);
+            ObjMesh.Vec3 fn = normal(a, b, c);
+            ObjMesh.Vec3 na = f.n0 >= 0 ? mesh.normals.get(f.n0) : fn;
+            ObjMesh.Vec3 nb = f.n1 >= 0 ? mesh.normals.get(f.n1) : fn;
+            ObjMesh.Vec3 nc = f.n2 >= 0 ? mesh.normals.get(f.n2) : fn;
+            ObjMesh.Vec2 ua = f.t0 >= 0 ? mesh.uvs.get(f.t0) : null;
+            ObjMesh.Vec2 ub = f.t1 >= 0 ? mesh.uvs.get(f.t1) : null;
+            ObjMesh.Vec2 uc = f.t2 >= 0 ? mesh.uvs.get(f.t2) : null;
+            int matId = f.materialId >= 0 ? f.materialId : -1;
+            tris.add(new Triangle(a, b, c, fn, na, nb, nc, ua, ub, uc, matId));
+
+            // 自发光材质 → 标记三角形顶点所在格为发光格
+            if (matId >= 0 && matId < mesh.materials.size()) {
+                ObjMesh.Material m = mesh.materials.get(matId);
+                if (m.keR > 0 || m.keG > 0 || m.keB > 0) {
+                    float mx = Math.max(m.keR, Math.max(m.keG, m.keB));
+                    int level = Math.max(1, Math.min(15, (int) Math.round(mx)));
+                    addLightCell(lightMap, (int) Math.floor(wa.x()), (int) Math.floor(wa.y()), (int) Math.floor(wa.z()), level);
+                    addLightCell(lightMap, (int) Math.floor(wb.x()), (int) Math.floor(wb.y()), (int) Math.floor(wb.z()), level);
+                    addLightCell(lightMap, (int) Math.floor(wc.x()), (int) Math.floor(wc.y()), (int) Math.floor(wc.z()), level);
+                }
+            }
+            if (progress != null && (fi % 5000 == 0 || fi == n - 1)) {
+                progress.onProgress(fi + 1, n);
+            }
+        }
+
+        List<Domain> domains = tris.isEmpty() ? List.of()
+                : List.of(new Domain(0, ox, oy, oz, new ObjMesh.Vec3(0, 1, 0), tris));
+        return new DomainResult(domains, tris.size(), mesh.vertices.size(), n,
+                new ArrayList<>(lightMap.values()));
+    }
+
+    /** 合并发光格：同格取最大光照等级 */
+    private static void addLightCell(Map<Long, LightCell> map, int x, int y, int z, int level) {
+        long key = cellKey(x, y, z);
+        LightCell prev = map.get(key);
+        if (prev == null || prev.level() < level) {
+            map.put(key, new LightCell(x, y, z, level));
+        }
     }
 }
