@@ -119,4 +119,4 @@ config/polarisobjuilder/models/
 
 ## 许可
 
-All Rights Reserved
+[GNU General Public License v3.0](LICENSE)

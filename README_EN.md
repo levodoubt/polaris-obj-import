@@ -119,4 +119,4 @@ Output: `build/libs/polarisobjuilder-1.0.0.jar`
 
 ## License
 
-All Rights Reserved
+[GNU General Public License v3.0](LICENSE)
