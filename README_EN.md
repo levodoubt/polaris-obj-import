@@ -1,5 +1,7 @@
 # Polaris Objuilder
 
+> [简体中文](README.md) | English
+
 **External 3D model importer (OBJ / glTF)** — import Blender-made buildings, machines and scenery into Minecraft, with support for animation, PBR materials, collision and right-click interaction.
 
 > Target environment: Minecraft 1.21.1 · NeoForge 21.1.248 · Java 21
