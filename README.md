@@ -1,5 +1,7 @@
 # Polaris Objuilder
 
+> 简体中文 | [English](README_EN.md)
+
 **外部 3D 模型导入模组（OBJ / glTF）** — 把 Blender 制作的建筑、机械、地景导入 Minecraft 世界，支持动画、PBR 材质、碰撞与右键交互。
 
 > 目标环境：Minecraft 1.21.1 · NeoForge 21.1.248 · Java 21
