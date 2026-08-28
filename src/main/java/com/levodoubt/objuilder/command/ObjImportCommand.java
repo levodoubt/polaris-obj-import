@@ -4,14 +4,20 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 import com.levodoubt.objuilder.PolarisObjuilder;
 import com.levodoubt.objuilder.client.DomainModelCache;
+import com.levodoubt.objuilder.client.GlbAnimationManager;
 import com.levodoubt.objuilder.client.PieceModelCache;
 import com.levodoubt.objuilder.core.BakeFormat;
+import com.levodoubt.objuilder.core.GlbModel;
+import com.levodoubt.objuilder.core.GlbParser;
 import com.levodoubt.objuilder.core.ObjMesh;
 import com.levodoubt.objuilder.core.ObjParser;
 import com.levodoubt.objuilder.core.Schematic;
@@ -418,7 +424,7 @@ public class ObjImportCommand {
         return computeBoundsFromPlacements(result.placements());
     }
 
-    private static String neoforgePath() {
+    public static String neoforgePath() {
         return net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
                 .resolve("polarisobjuilder").toString();
     }
@@ -436,7 +442,7 @@ public class ObjImportCommand {
     }
 
     /** 提取模型各材质的贴图路径（索引 = materialId，无贴图 = null）。单材质模型回退 texturePath。 */
-    private static List<String> materialTexturePaths(ObjMesh mesh) {
+    public static List<String> materialTexturePaths(ObjMesh mesh) {
         List<String> paths = new ArrayList<>();
         if (mesh.materials.isEmpty()) {
             if (mesh.texturePath != null) paths.add(mesh.texturePath);
@@ -449,7 +455,7 @@ public class ObjImportCommand {
     }
 
     /** 提取模型各材质的漫反射颜色（索引 = materialId，[r,g,b]）。单材质/无材质 → 空列表。 */
-    private static List<float[]> materialColors(ObjMesh mesh) {
+    public static List<float[]> materialColors(ObjMesh mesh) {
         List<float[]> colors = new ArrayList<>();
         for (ObjMesh.Material m : mesh.materials) {
             colors.add(new float[]{m.kdR, m.kdG, m.kdB});
@@ -458,7 +464,7 @@ public class ObjImportCommand {
     }
 
     /** 提取模型各材质的自发光颜色（索引 = materialId，[r,g,b]）。 */
-    private static List<float[]> materialEmissive(ObjMesh mesh) {
+    public static List<float[]> materialEmissive(ObjMesh mesh) {
         List<float[]> emissive = new ArrayList<>();
         for (ObjMesh.Material m : mesh.materials) {
             emissive.add(new float[]{m.keR, m.keG, m.keB});
@@ -466,8 +472,26 @@ public class ObjImportCommand {
         return emissive;
     }
 
+    /** 提取模型各材质的透明度（索引 = materialId；OBJ MTL d，1=不透明，<1=半透明）。 */
+    public static List<Float> materialAlphas(ObjMesh mesh) {
+        List<Float> alphas = new ArrayList<>();
+        for (ObjMesh.Material m : mesh.materials) {
+            alphas.add(m.d);
+        }
+        return alphas;
+    }
+
+    /** OBJ 材质 → MASK 镂空的 materialId 集合（MTL map_d alpha 贴图 → alpha-test cutout 渲染，B1 收尾·事项 5） */
+    public static Set<Integer> objMaskedMaterials(ObjMesh mesh) {
+        Set<Integer> s = new HashSet<>();
+        for (int i = 0; i < mesh.materials.size(); i++) {
+            if (mesh.materials.get(i).mapD != null) s.add(i);
+        }
+        return s;
+    }
+
     /** 批量加载多材质贴图（索引 = materialId，无贴图 = null）。objFile 用于解析相对路径与失效绝对路径回退。 */
-    private static List<NativeImage> loadTextures(List<String> paths, File objFile) {
+    public static List<NativeImage> loadTextures(List<String> paths, File objFile) {
         List<NativeImage> images = new ArrayList<>();
         if (paths == null) return images;
         for (String path : paths) {
@@ -642,9 +666,13 @@ public class ObjImportCommand {
                     .getTextureAtlas(TextureAtlas.LOCATION_BLOCKS)
                     .apply(ResourceLocation.fromNamespaceAndPath("minecraft", "block/white_concrete"));
             List<NativeImage> textures = loadTextures(materialTexturePaths(finalMesh), finalObjFile);
-            Map<Integer, ResourceLocation> texMap = DomainModelCache.registerTextures(textures);
+            List<NativeImage> speculars = objMaterialSpecularImages(finalMesh);
+            fillBaseColorsForObjPbr(textures, speculars, finalMesh);
+            Map<Integer, ResourceLocation> texMap = DomainModelCache.registerPbrTextures(textures, null, speculars);
             DomainModelCache.setMaterialColors(modelId, materialColors(finalMesh));
             DomainModelCache.setMaterialEmissive(modelId, materialEmissive(finalMesh));
+            DomainModelCache.setMaterialAlpha(modelId, materialAlphas(finalMesh));
+            DomainModelCache.setMaterialMasked(modelId, objMaskedMaterials(finalMesh));
             DomainModelCache.bake(modelId, result.domains(), sprite, texMap);
 
             // 摆放域实体（多模型共存，独立缓存，不清除旧实体）
@@ -770,6 +798,457 @@ public class ObjImportCommand {
         for (Voxelizer.LightCell lc : lightCells) {
             BlockPos pos = base.offset(lc.x(), lc.y(), lc.z());
             level.setBlock(pos, lightState.setValue(LightBlock.LEVEL, lc.level()), 3);
+        }
+    }
+
+    // ===================== glb（glTF 2.0）静态导入 =====================
+
+    /**
+     * /glbdomain [scale] [file] — glb 静态导入：
+     * 解析 node 树 + mesh + 材质 → 展平为单实体整体几何 → 复用纯视觉渲染管线。
+     * 与 OBJ 的 /objdomain 并存（modelId 独立缓存，互不干扰）。
+     */
+    public static int glbDomain(CommandSourceStack source, String file, float scale) {
+        ClientLevel clientLevel = Minecraft.getInstance().level;
+        var player = Minecraft.getInstance().player;
+        if (clientLevel == null || player == null) return 0;
+        if (file == null || file.isBlank()) {
+            source.sendFailure(Component.literal("请指定 glb 文件路径（无内置模型）"));
+            return 0;
+        }
+
+        File f = new File(file);
+        if (!f.isAbsolute()) {
+            f = new File(new File(neoforgePath(), "models"), file);
+        }
+        if (!f.exists()) {
+            source.sendFailure(Component.literal("找不到模型: " + f.getAbsolutePath()));
+            return 0;
+        }
+        final File inFile = f;
+        final float finalScale = scale;
+
+        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台解析 glb 中..."), false);
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                GlbModel model = GlbParser.parse(inFile);
+                GlbModel.FlattenResult flat = model.flatten(finalScale);
+                logGlbInfo(model, flat); // 成功标准 1：命令行打印 node 层级/顶点三角形数/材质列表
+                return new GlbJob(model, flat);
+            } catch (Exception e) {
+                PolarisObjuilder.LOGGER.error("[Glb] 解析失败: {}", inFile.getAbsolutePath(), e);
+                return null;
+            }
+        }, Util.backgroundExecutor()).thenAcceptAsync(job -> {
+            if (job == null) {
+                source.sendFailure(Component.literal("glb 解析失败，详见日志"));
+                return;
+            }
+            GlbModel model = job.model;
+            GlbModel.FlattenResult flat = job.flat;
+            if (flat.triangles().isEmpty()) {
+                source.sendFailure(Component.literal("glb 展平为空：模型无三角网格"));
+                return;
+            }
+            // 烘焙几何 + 材质（多材质：baseColorFactor 颜色 / baseColorTexture 动态纹理）
+            int modelId = DomainModelCache.nextModelId();
+            TextureAtlasSprite sprite = Minecraft.getInstance()
+                    .getTextureAtlas(TextureAtlas.LOCATION_BLOCKS)
+                    .apply(ResourceLocation.fromNamespaceAndPath("minecraft", "block/white_concrete"));
+            List<NativeImage> textures = glbMaterialTextures(model);
+            List<NativeImage> normals = glbMaterialNormalImages(model);
+            List<NativeImage> speculars = glbMaterialSpecularImages(model);
+            fillBaseColorsForGlbPbr(textures, normals, speculars, model);
+            Map<Integer, ResourceLocation> texMap = DomainModelCache.registerPbrTextures(textures, normals, speculars);
+            DomainModelCache.setMaterialColors(modelId, glbMaterialColors(model));
+            DomainModelCache.setMaterialEmissive(modelId, glbMaterialEmissive(model));
+            DomainModelCache.setMaterialAlpha(modelId, glbMaterialAlphas(model));
+            DomainModelCache.setDoubleSided(modelId, glbDoubleSidedMaterials(model));
+            DomainModelCache.setMaterialMasked(modelId, glbMaskedMaterials(model));
+            Voxelizer.Domain domain = new Voxelizer.Domain(0, flat.ox(), flat.oy(), flat.oz(),
+                    new ObjMesh.Vec3(0, 1, 0), flat.triangles());
+            DomainModelCache.bake(modelId, List.of(domain), sprite, texMap);
+
+            // 摆放实体（实体位置 = 基准点 + 模型中心格；与 OBJ 并存，不清除旧实体）
+            Level level = authorityWorld(Minecraft.getInstance().level);
+            BlockPos base = Minecraft.getInstance().player.blockPosition().offset(7, 1, 7);
+            spawnDomains(level, base, modelId, List.of(domain));
+
+            // 动画：模型带 node TRS 动画 → 注册循环播放（方案 A：每 tick 重展平更新缓存）
+            boolean animated = GlbAnimationManager.register(modelId, model, finalScale, sprite, texMap);
+
+            LastImportStats.modelName = "[glb] " + inFile.getName();
+            LastImportStats.gridCells = flat.triangles().size();
+            LastImportStats.pieceCount = 1;
+            LastImportStats.renderTris = flat.triangles().size();
+            LastImportStats.importTimeMs = 0;
+
+            source.sendSuccess(() -> Component.literal(String.format(
+                    "§a[Objuilder] glb 导入完成 → %s · 三角形 %d（1 实体整体渲染，材质 %d%s）",
+                    inFile.getName(), flat.triangles().size(), model.materials.size(),
+                    animated ? " · §b循环动画已启动" : "")), true);
+        }, Minecraft.getInstance());
+        return 1;
+    }
+
+    /** 后台 glb 任务结果（model + 展平几何） */
+    private record GlbJob(GlbModel model, GlbModel.FlattenResult flat) {
+    }
+
+    /** 成功标准 1：打印 node 层级 / mesh 顶点三角形数 / 材质列表 / 展平统计 */
+    private static void logGlbInfo(GlbModel model, GlbModel.FlattenResult flat) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n===== Glb 解析信息: ").append(model.name).append(" =====");
+        sb.append("\n[场景] 根节点 ").append(model.sceneRoots.size()).append(" 个: ")
+                .append(Arrays.toString(model.sceneRoots.toArray()));
+        sb.append("\n[node 层级]");
+        for (int root : model.sceneRoots) {
+            appendGlbNode(sb, model, root, 1);
+        }
+        int totalTris = 0, totalVerts = 0;
+        for (GlbModel.Mesh mesh : model.meshes) {
+            for (GlbModel.Primitive p : mesh.primitives) {
+                totalVerts += p.vertexCount();
+                totalTris += (p.indices != null ? p.indices.length : p.vertexCount()) / 3;
+            }
+        }
+        sb.append("\n[网格] ").append(model.meshes.size()).append(" 个 · 顶点 ")
+                .append(totalVerts).append(" · 三角形 ").append(totalTris);
+        sb.append("\n[材质] ").append(model.materials.size()).append(" 个");
+        for (int i = 0; i < model.materials.size(); i++) {
+            GlbModel.Material m = model.materials.get(i);
+            sb.append(String.format(
+                    "\n  #%d %s · baseColor %s · tex#%d · metallic %.2f · roughness %.2f · normal#%d · emissive %s · alpha %s",
+                    i, m.baseColorTexture >= 0 ? "(贴图)" : "(纯色)",
+                    m.baseColorFactor != null ? Arrays.toString(m.baseColorFactor) : "默认白",
+                    m.baseColorTexture, m.metallicFactor, m.roughnessFactor, m.normalTexture,
+                    m.emissiveFactor != null ? Arrays.toString(m.emissiveFactor) : "无",
+                    m.alphaMode));
+        }
+        // 成功标准 1：动画 name / channel 数 / 关键帧数 / interpolation
+        sb.append("\n[动画] ").append(model.animations.size()).append(" 个");
+        for (int i = 0; i < model.animations.size(); i++) {
+            GlbModel.Animation a = model.animations.get(i);
+            sb.append("\n  #").append(i).append(" '").append(a.name).append("' · channel ")
+                    .append(a.channels.size()).append(" 个");
+            for (GlbModel.Channel c : a.channels) {
+                sb.append("\n    - node#").append(c.nodeIndex).append(" · ").append(c.path)
+                        .append(" · ").append(c.interpolation).append(" · 关键帧 ")
+                        .append(c.times.length)
+                        .append(" · duration ").append(c.times.length > 0 ? c.times[c.times.length - 1] : 0)
+                        .append("s");
+            }
+        }
+        sb.append("\n[展平] 渲染三角形 ").append(flat.triangles().size())
+                .append(" · 中心格 ").append(flat.ox()).append(',').append(flat.oy()).append(',').append(flat.oz())
+                .append("\n=================================");
+        PolarisObjuilder.LOGGER.info("[Glb]{}", sb);
+    }
+
+    private static void appendGlbNode(StringBuilder sb, GlbModel model, int idx, int depth) {
+        if (idx < 0 || idx >= model.nodes.size()) return;
+        GlbModel.Node n = model.nodes.get(idx);
+        sb.append("\n");
+        for (int i = 0; i < depth; i++) sb.append("  ");
+        sb.append("▸ ").append(n.name.isBlank() ? "<unnamed>" : n.name);
+        if (n.meshes.length > 0) sb.append(" [mesh ").append(Arrays.toString(n.meshes)).append("]");
+        if (n.translation != null) sb.append(" t=").append(Arrays.toString(n.translation));
+        if (n.rotation != null) sb.append(" r=").append(Arrays.toString(n.rotation));
+        if (n.scale != null) sb.append(" s=").append(Arrays.toString(n.scale));
+        for (int c : n.children) appendGlbNode(sb, model, c, depth + 1);
+    }
+
+    /** glb 材质 → 漫反射颜色列表（索引 = materialId；有贴图材质不传颜色=白，由贴图承载） */
+    public static List<float[]> glbMaterialColors(GlbModel model) {
+        List<float[]> colors = new ArrayList<>();
+        for (GlbModel.Material m : model.materials) {
+            if (m.baseColorTexture >= 0) {
+                colors.add(null); // 有贴图 → 渲染器用贴图
+            } else {
+                colors.add(m.baseColorFactor != null
+                        ? new float[]{m.baseColorFactor[0], m.baseColorFactor[1], m.baseColorFactor[2]}
+                        : null);
+            }
+        }
+        return colors;
+    }
+
+    /** glb 材质 → 自发光颜色列表（索引 = materialId；emissiveFactor → [r,g,b]，无 emissiveFactor 或全 0 → null） */
+    public static List<float[]> glbMaterialEmissive(GlbModel model) {
+        List<float[]> emissive = new ArrayList<>();
+        for (GlbModel.Material m : model.materials) {
+            if (m.emissiveFactor != null
+                    && (m.emissiveFactor[0] > 0 || m.emissiveFactor[1] > 0 || m.emissiveFactor[2] > 0)) {
+                emissive.add(new float[]{clamp01(m.emissiveFactor[0]),
+                        clamp01(m.emissiveFactor[1]), clamp01(m.emissiveFactor[2])});
+            } else {
+                emissive.add(null);
+            }
+        }
+        return emissive;
+    }
+
+    /** glb 材质 → 透明度列表（索引 = materialId；alphaMode=BLEND 取 baseColorFactor 的 alpha，否则 1） */
+    public static List<Float> glbMaterialAlphas(GlbModel model) {
+        List<Float> alphas = new ArrayList<>();
+        for (GlbModel.Material m : model.materials) {
+            if ("BLEND".equalsIgnoreCase(m.alphaMode)) {
+                alphas.add(m.baseColorFactor != null ? clamp01(m.baseColorFactor[3]) : 1f);
+            } else {
+                alphas.add(1f); // OPAQUE 不透明 / MASK 走 alpha-test 镂空（另存 MASK 集合，渲染用 cutout）
+            }
+        }
+        return alphas;
+    }
+
+    /** glb 材质 → MASK 镂空的 materialId 集合（glTF alphaMode=MASK → alpha-test cutout 渲染，B1 收尾·事项 5） */
+    public static Set<Integer> glbMaskedMaterials(GlbModel model) {
+        Set<Integer> s = new HashSet<>();
+        for (int i = 0; i < model.materials.size(); i++) {
+            if ("MASK".equalsIgnoreCase(model.materials.get(i).alphaMode)) s.add(i);
+        }
+        return s;
+    }
+
+    /** glb 材质 → doubleSided 的 materialId 集合（glTF doubleSided=true → 双面渲染 NO_CULL） */
+    public static Set<Integer> glbDoubleSidedMaterials(GlbModel model) {
+        Set<Integer> s = new HashSet<>();
+        for (int i = 0; i < model.materials.size(); i++) {
+            if (model.materials.get(i).doubleSided) s.add(i);
+        }
+        return s;
+    }
+
+    /** glb 材质 → 贴图 NativeImage 列表（索引 = materialId；baseColorTexture → image 字节；无 → null） */
+    public static List<NativeImage> glbMaterialTextures(GlbModel model) {
+        List<NativeImage> images = new ArrayList<>();
+        for (GlbModel.Material m : model.materials) {
+            images.add(m.baseColorTexture >= 0 ? glbImage(model, m.baseColorTexture) : null);
+        }
+        return images;
+    }
+
+    /** texture 索引 → 内嵌 image 字节 → NativeImage（png/jpeg） */
+    public static NativeImage glbImage(GlbModel model, int textureIndex) {
+        if (textureIndex < 0 || textureIndex >= model.textures.size()) return null;
+        int imgIdx = model.textures.get(textureIndex);
+        if (imgIdx < 0 || imgIdx >= model.images.size()) return null;
+        byte[] bytes = model.images.get(imgIdx);
+        if (bytes == null) return null;
+        NativeImage img = decodeGlbImage(bytes, imgIdx);
+        if (img != null) {
+            PolarisObjuilder.LOGGER.info("[Glb] 贴图解码成功 image#{} ({}x{})",
+                    imgIdx, img.getWidth(), img.getHeight());
+        }
+        return img;
+    }
+
+    /**
+     * 解码 glb 内嵌贴图字节。
+     * MC 1.21.1 的 NativeImage.read(InputStream) 只支持 PNG（内部强制校验 PNG 签名），
+     * JPEG 等其它格式需走 ImageIO。按魔数区分：
+     * PNG(89 50 4E 47) → NativeImage.read；其它(JPEG FF D8 FF 等) → ImageIO。
+     */
+    private static NativeImage decodeGlbImage(byte[] bytes, int imgIdx) {
+        boolean isPng = bytes.length >= 4
+                && (bytes[0] & 0xFF) == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47;
+        if (isPng) {
+            try (InputStream in = new java.io.ByteArrayInputStream(bytes)) {
+                return NativeImage.read(in);
+            } catch (Exception e) {
+                PolarisObjuilder.LOGGER.warn("[Glb] PNG 解码失败 image#{}", imgIdx, e);
+                return null;
+            }
+        }
+        // 非 PNG（JPEG 等）→ ImageIO
+        try {
+            java.awt.image.BufferedImage bi = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(bytes));
+            if (bi == null) {
+                PolarisObjuilder.LOGGER.warn("[Glb] ImageIO 解码失败 image#{}", imgIdx);
+                return null;
+            }
+            NativeImage img = new NativeImage(bi.getWidth(), bi.getHeight(), false);
+            for (int y = 0; y < bi.getHeight(); y++) {
+                for (int x = 0; x < bi.getWidth(); x++) {
+                    int rgb = bi.getRGB(x, y);
+                    int r = (rgb >> 16) & 0xFF;
+                    int g = (rgb >> 8) & 0xFF;
+                    int b = rgb & 0xFF;
+                    // NativeImage 为 ABGR 布局：A<<24 | B<<16 | G<<8 | R
+                    img.setPixelRGBA(x, y, 0xFF000000 | (b << 16) | (g << 8) | r);
+                }
+            }
+            return img;
+        } catch (Exception e) {
+            PolarisObjuilder.LOGGER.warn("[Glb] 贴图解码失败 image#{}", imgIdx, e);
+            return null;
+        }
+    }
+
+    // ===================== PBR 贴图生成（子工程 4） =====================
+
+    /** glb 材质 → 法线贴图 NativeImage 列表（索引 = materialId；normalTexture → image；无 → null） */
+    public static List<NativeImage> glbMaterialNormalImages(GlbModel model) {
+        List<NativeImage> images = new ArrayList<>();
+        for (GlbModel.Material m : model.materials) {
+            images.add(m.normalTexture >= 0 ? glbImage(model, m.normalTexture) : null);
+        }
+        return images;
+    }
+
+    /**
+     * glb 材质 → labPBR specular 贴图 NativeImage 列表（索引 = materialId；无金属/粗糙/自发光 → null）。
+     * Photon labPBR v1.3 通道：R=高光强度(1-粗糙度²反演) · G=F0/金属编码 · B=SSS · A=自发光(1=无)。
+     * glTF metallicRoughnessTexture（R=metalness, G=roughness）× factor 转换后写入。
+     */
+    public static List<NativeImage> glbMaterialSpecularImages(GlbModel model) {
+        List<NativeImage> images = new ArrayList<>();
+        for (GlbModel.Material m : model.materials) {
+            NativeImage mr = m.metallicRoughnessTexture >= 0
+                    ? glbImage(model, m.metallicRoughnessTexture) : null;
+            NativeImage em = m.emissiveTexture >= 0
+                    ? glbImage(model, m.emissiveTexture) : null;
+            images.add(buildLabPbrSpecular(mr, em, m.metallicFactor, m.roughnessFactor,
+                    m.emissiveFactor, m.emissiveStrength));
+        }
+        return images;
+    }
+
+    /**
+     * OBJ 材质 → labPBR specular 标量贴图列表（索引 = materialId）。
+     * 从 MTL 高光参数推导：roughness = sqrt(2/(Ns+2))（Blinn→GGX 近似）；f0 ≈ Ks 亮度。
+     * Ns<=0（无高光）→ null（不参与 PBR）。
+     */
+    public static List<NativeImage> objMaterialSpecularImages(ObjMesh mesh) {
+        List<NativeImage> images = new ArrayList<>();
+        for (ObjMesh.Material m : mesh.materials) {
+            if (m.ns <= 0f) {
+                images.add(null);
+                continue;
+            }
+            float rough = clamp01((float) Math.sqrt(2.0 / (m.ns + 2.0)));
+            float metal = clamp01(Math.max(m.ksR, Math.max(m.ksG, m.ksB)));
+            // OBJ 自发光走渲染器顶点色辉光 Ke；此处 labPBR A 通道也写入 Ke 亮度标志 → Photon 识别自发光 → 强辉光
+            float emis = clamp01(Math.max(m.keR, Math.max(m.keG, m.keB)));
+            NativeImage img = new NativeImage(NativeImage.Format.RGBA, 1, 1, false);
+            img.setPixelRGBA(0, 0, packLabPbr(metal, rough, emis));
+            images.add(img);
+            PolarisObjuilder.LOGGER.info("[Objuilder] 材质 '{}' → specular 标量 metal={} rough={} (Ks={} Ns={})",
+                    m.name, metal, rough, clamp01(Math.max(m.ksR, Math.max(m.ksG, m.ksB))), m.ns);
+        }
+        return images;
+    }
+
+    /**
+     * 合成 labPBR specular 贴图（Photon v1.3 语义）。
+     * 尺寸取 metallicRoughnessTexture 与 emissiveTexture 的较大者（可均无 → 1×1 标量）。
+     * 逐像素：metal = mf×mr.B，rough = rf×mr.G；自发光 e = max(emissiveFactor亮度×strength, emissiveTexture 像素亮度)
+     * → packLabPbr 反转写入 A 通道（Photon 识别自发光材质 → 强辉光）。
+     */
+    private static NativeImage buildLabPbrSpecular(NativeImage mr, NativeImage em,
+                                                   float metallic, float rough, float[] emissiveFactor,
+                                                   float emissiveStrength) {
+        float mf = clamp01(metallic);
+        float rf = clamp01(rough);
+        float eBase = 0f;
+        if (emissiveFactor != null) {
+            eBase = Math.max(emissiveFactor[0], Math.max(emissiveFactor[1], emissiveFactor[2]));
+        }
+        eBase *= emissiveStrength;
+        int w = 1, h = 1;
+        if (mr != null) { w = mr.getWidth(); h = mr.getHeight(); }
+        if (em != null) { w = Math.max(w, em.getWidth()); h = Math.max(h, em.getHeight()); }
+        NativeImage out = new NativeImage(NativeImage.Format.RGBA, w, h, false);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                float metal = mf, roughP = rf, e = eBase;
+                if (mr != null && x < mr.getWidth() && y < mr.getHeight()) {
+                    int p = mr.getPixelRGBA(x, y);
+                    // NativeImage 为 ABGR 布局：bit0-7=R, bit8-15=G, bit16-23=B, bit24-31=A
+                    // glTF metallicRoughnessTexture 通道：G=roughness, B=metallic
+                    roughP = ((p >> 8) & 0xFF) / 255f * rf;    // G 通道 = roughness
+                    metal = ((p >> 16) & 0xFF) / 255f * mf;    // B 通道 = metallic
+                }
+                if (em != null && x < em.getWidth() && y < em.getHeight()) {
+                    int pe = em.getPixelRGBA(x, y);
+                    float r = (pe & 0xFF) / 255f;
+                    float g = ((pe >> 8) & 0xFF) / 255f;
+                    float b = ((pe >> 16) & 0xFF) / 255f;
+                    float lum = r * 0.299f + g * 0.587f + b * 0.114f;
+                    e = Math.max(e, lum);
+                }
+                out.setPixelRGBA(x, y, packLabPbr(clamp01(metal), clamp01(roughP), clamp01(e)));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * labPBR specular 像素打包（Photon v1.3 语义，NativeImage 为 ABGR 布局）。
+     * GL 通道语义：R=smoothness(1-√rough) · G=F0 · B=0(SSS) · A=自发光强度。
+     * 关键：Photon 解码（material.glsl）为
+     *   emission = albedo * specular_map.a * float(specular_map.a != 1.0)
+     * 即 **A=255(1.0)=无自发光（哨兵）；A<255=自发光，emission=albedo×a，a 越接近 254 越亮**。
+     * 故 emissive 参数（0=无，1=最强）映射为 A = emissive<=0 ? 255 : round(emissive*254)（上限 254 避开哨兵）。
+     * NativeImage ABGR：bit0-7=R · bit8-15=G · bit16-23=B · bit24-31=A。
+     */
+    private static int packLabPbr(float metal, float rough, float emissive) {
+        float smooth = 1f - (float) Math.sqrt(clamp01(rough));
+        float f0 = metal >= 0.9f ? 240f / 255f : 0.04f + metal * 0.86f;
+        int R = Math.round(clamp01(smooth) * 255f);   // GL R = smoothness
+        int G = Math.round(clamp01(f0) * 255f);       // GL G = F0
+        int A = emissive <= 0.001f ? 255
+                : Math.max(1, Math.min(254, Math.round(clamp01(emissive) * 254f)));
+        // ABGR：A<<24 | B<<16 | G<<8 | R（B=SSS=0）
+        return (A << 24) | (G << 8) | R;
+    }
+
+    public static float clamp01(float v) {
+        return v < 0f ? 0f : Math.min(v, 1f);
+    }
+
+    /**
+     * OBJ 路径：无 map_Kd 但生成过 specular（有高光）的纯色材质 → 补 1×1 Kd 颜色 base。
+     * PBR loader 按「纹理实例」关联，纯色材质没有 base 纹理则 specular 无处挂载。
+     */
+    public static void fillBaseColorsForObjPbr(List<NativeImage> bases, List<NativeImage> speculars,
+                                                ObjMesh mesh) {
+        if (speculars == null) return;
+        for (int i = 0; i < speculars.size(); i++) {
+            if (speculars.get(i) == null) continue;
+            if (bases != null && bases.size() > i && bases.get(i) != null) continue;
+            ObjMesh.Material m = i < mesh.materials.size() ? mesh.materials.get(i) : null;
+            float r = m != null ? clamp01(m.kdR) : 1f;
+            float g = m != null ? clamp01(m.kdG) : 1f;
+            float b = m != null ? clamp01(m.kdB) : 1f;
+            NativeImage img = new NativeImage(NativeImage.Format.RGBA, 1, 1, false);
+            // ABGR 布局：A<<24 | B<<16 | G<<8 | R
+            img.setPixelRGBA(0, 0, 0xFF000000
+                    | (Math.round(b * 255f) << 16) | (Math.round(g * 255f) << 8) | Math.round(r * 255f));
+            bases.set(i, img);
+        }
+    }
+
+    /**
+     * glb 路径：无 baseColorTexture 但带 PBR（法线/金属粗糙）的材质 → 补 1×1 baseColorFactor 颜色 base。
+     */
+    public static void fillBaseColorsForGlbPbr(List<NativeImage> bases, List<NativeImage> normals,
+                                                List<NativeImage> speculars, GlbModel model) {
+        if (normals == null && speculars == null) return;
+        for (int i = 0; i < model.materials.size(); i++) {
+            boolean hasNormal = normals != null && normals.size() > i && normals.get(i) != null;
+            boolean hasSpec = speculars != null && speculars.size() > i && speculars.get(i) != null;
+            if (!hasNormal && !hasSpec) continue;
+            if (bases != null && bases.size() > i && bases.get(i) != null) continue;
+            GlbModel.Material m = model.materials.get(i);
+            float r = m.baseColorFactor != null ? clamp01(m.baseColorFactor[0]) : 1f;
+            float g = m.baseColorFactor != null ? clamp01(m.baseColorFactor[1]) : 1f;
+            float b = m.baseColorFactor != null ? clamp01(m.baseColorFactor[2]) : 1f;
+            NativeImage img = new NativeImage(NativeImage.Format.RGBA, 1, 1, false);
+            // ABGR 布局：A<<24 | B<<16 | G<<8 | R
+            img.setPixelRGBA(0, 0, 0xFF000000
+                    | (Math.round(b * 255f) << 16) | (Math.round(g * 255f) << 8) | Math.round(r * 255f));
+            bases.set(i, img);
         }
     }
 }

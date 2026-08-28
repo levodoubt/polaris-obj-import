@@ -121,6 +121,11 @@ configurations {
 dependencies {
     // 调试面板 API（polarisdevtool）——compileOnly，运行时由 devtools 模组提供
     compileOnly "blank:polarisdevtool:1.0.0"
+    // Iris（光影加载器）PBR API——compileOnly，运行时由 Iris/Oculus 提供；无 Iris 时 PBR 代码路径自动跳过
+    compileOnly "iris:iris:1.8.14"
+    // 北极星·剧情核心（polarisstorycore）动作 API——compileOnly 软依赖，运行时由 storycore 模组提供；
+    // 无 storycore 时 StoryCoreSupport 用 Class.forName 检测跳过，B1 独立可用（不引任何 storycore 类进主代码）
+    compileOnly name: 'polarisstorycore-1.0.0'
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

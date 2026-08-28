@@ -3,6 +3,7 @@ package com.levodoubt.objuilder;
 import org.slf4j.Logger;
 
 import com.levodoubt.objuilder.block.PieceBlock;
+import com.levodoubt.objuilder.entity.ColliderEntity;
 import com.levodoubt.objuilder.entity.DomainEntity;
 import com.mojang.logging.LogUtils;
 
@@ -15,6 +16,7 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
+import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import net.neoforged.neoforge.registries.DeferredHolder;
@@ -60,10 +62,33 @@ public class PolarisObjuilder {
                     .setTrackingRange(1024)
                     .build(MODID + ":domain"));
 
+    /**
+     * 隐形碰撞体实体（子工程 6）：每个 `col:` 盒 → 一个 ColliderEntity，承载世界 AABB 碰撞。
+     * 无渲染、无重力、不可动；isPushable=true 参与 getEntityCollisions（挡人前提），push 空实现防被推走。
+     * sized(0.1) 仅为类型默认，实际 AABB 由 SynchedEntityData 同步（任意矩形），渲染/剔除用 getBoundingBox()。
+     */
+    public static final DeferredHolder<EntityType<?>, EntityType<ColliderEntity>> COLLIDER_ENTITY =
+            ENTITIES.register("collider", () -> EntityType.Builder.of(ColliderEntity::new, MobCategory.MISC)
+                    .sized(0.1f, 0.1f)
+                    .noSummon()
+                    .setUpdateInterval(3)
+                    .setShouldReceiveVelocityUpdates(false)
+                    .setTrackingRange(1024)
+                    .build(MODID + ":collider"));
+
     public PolarisObjuilder(IEventBus modEventBus, ModContainer modContainer) {
         BLOCKS.register(modEventBus);
         ENTITIES.register(modEventBus);
         com.levodoubt.objuilder.block.ObjPieceBlockEntity.BLOCK_ENTITIES.register(modEventBus);
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+        modEventBus.addListener(PolarisObjuilder::onCommonSetup);
+    }
+
+    /**
+     * Common setup（双端，所有 mod 构造器已完成）：StoryCore 软依赖联动。
+     * 检测 storycore 存在才注册剧情动作，无 storycore 时 B1 独立可用。
+     */
+    private static void onCommonSetup(FMLCommonSetupEvent event) {
+        com.levodoubt.objuilder.storycore.StoryCoreSupport.init();
     }
 }

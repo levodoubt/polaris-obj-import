@@ -32,31 +32,61 @@ public class ObjMesh {
     /** 材质列表（多材质支持）：按解析顺序，索引即 materialId */
     public final List<Material> materials = new ArrayList<>();
 
-    /** 材质：名称 + map_Kd 贴图路径（可为 null）+ Kd 漫反射颜色（默认白）+ Ke 自发光颜色（默认黑=无） */
+    /** 材质：名称 + map_Kd 贴图路径（可为 null）+ map_d alpha 贴图路径（可为 null，MASK 镂空用）+ Kd 漫反射颜色（默认白）+ Ke 自发光颜色（默认黑=无）+ Ks/Ns 高光（PBR specular 标量）+ d 透明度 */
     public static class Material {
         public final String name;
         public final String mapKd;
+        /** MTL map_d：alpha 贴图（B1 收尾·事项 5 OBJ MASK 镂空；map_Kd 同图时 base 自带 alpha 通道） */
+        public final String mapD;
         public final float kdR, kdG, kdB;
         public final float keR, keG, keB;
+        /** 高光色（Ks，Blender 默认 0.5）；高光指数（Ns，Blender 默认 0 = 无高光） */
+        public final float ksR, ksG, ksB, ns;
+        /** 溶解/透明度（MTL d，1=不透明，<1=半透明） */
+        public final float d;
 
         public Material(String name, String mapKd) {
-            this(name, mapKd, 1f, 1f, 1f, 0f, 0f, 0f);
+            this(name, mapKd, null, 1f, 1f, 1f, 0f, 0f, 0f, 0.5f, 0.5f, 0.5f, 0f, 1f);
         }
 
         public Material(String name, String mapKd, float kdR, float kdG, float kdB) {
-            this(name, mapKd, kdR, kdG, kdB, 0f, 0f, 0f);
+            this(name, mapKd, null, kdR, kdG, kdB, 0f, 0f, 0f, 0.5f, 0.5f, 0.5f, 0f, 1f);
         }
 
         public Material(String name, String mapKd, float kdR, float kdG, float kdB,
                         float keR, float keG, float keB) {
+            this(name, mapKd, null, kdR, kdG, kdB, keR, keG, keB, 0.5f, 0.5f, 0.5f, 0f, 1f);
+        }
+
+        public Material(String name, String mapKd, float kdR, float kdG, float kdB,
+                        float keR, float keG, float keB,
+                        float ksR, float ksG, float ksB, float ns) {
+            this(name, mapKd, null, kdR, kdG, kdB, keR, keG, keB, ksR, ksG, ksB, ns, 1f);
+        }
+
+        public Material(String name, String mapKd, float kdR, float kdG, float kdB,
+                        float keR, float keG, float keB,
+                        float ksR, float ksG, float ksB, float ns, float d) {
+            this(name, mapKd, null, kdR, kdG, kdB, keR, keG, keB, ksR, ksG, ksB, ns, d);
+        }
+
+        public Material(String name, String mapKd, String mapD, float kdR, float kdG, float kdB,
+                        float keR, float keG, float keB,
+                        float ksR, float ksG, float ksB, float ns, float d) {
             this.name = name;
             this.mapKd = mapKd;
+            this.mapD = mapD;
             this.kdR = kdR;
             this.kdG = kdG;
             this.kdB = kdB;
             this.keR = keR;
             this.keG = keG;
             this.keB = keB;
+            this.ksR = ksR;
+            this.ksG = ksG;
+            this.ksB = ksB;
+            this.ns = ns;
+            this.d = d;
         }
     }
 

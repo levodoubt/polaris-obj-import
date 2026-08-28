@@ -1,25 +1,122 @@
+# Polaris Objuilder
 
-Installation information
-=======
+**外部 3D 模型导入模组（OBJ / glTF）** — 把 Blender 制作的建筑、机械、地景导入 Minecraft 世界，支持动画、PBR 材质、碰撞与右键交互。
 
-This template repository can be directly cloned to get you started with a new
-mod. Simply create a new repository cloned from this one, by following the
-instructions provided by [GitHub](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
+> 目标环境：Minecraft 1.21.1 · NeoForge 21.1.248 · Java 21
 
-Once you have your clone, simply open the repository in the IDE of your choice. The usual recommendation for an IDE is either IntelliJ IDEA or Eclipse.
+---
 
-If at any point you are missing libraries in your IDE, or you've run into problems you can
-run `gradlew --refresh-dependencies` to refresh the local cache. `gradlew clean` to reset everything 
-{this does not affect your code} and then start the process again.
+## 功能特性
 
-Mapping Names:
-============
-By default, the MDK is configured to use the official mapping names from Mojang for methods and fields 
-in the Minecraft codebase. These names are covered by a specific license. All modders should be aware of this
-license. For the latest license text, refer to the mapping file itself, or the reference copy here:
-https://github.com/NeoForged/NeoForm/blob/main/Mojang.md
+| 能力 | 说明 |
+|---|---|
+| **双格式导入** | 支持 `.obj`（含 `.mtl`）与 `.glb`（glTF 2.0 二进制，Blender 原生导出） |
+| **纯视觉整体渲染** | 单个实体承载整个模型，几何量 = 原始面数（亿格级大模型不卡死） |
+| **多材质** | `map_Kd` / `baseColorTexture` / 纯色，按材质分 draw call |
+| **贴图** | 动态纹理逐像素贴图；`KHR_texture_transform`（UV 缩放/偏移/旋转）正确应用 |
+| **自发光** | Ke 视觉辉光 + `minecraft:light` 光源方块真实照亮 |
+| **透明度** | Alpha 半透明（BLEND）+ MASK 镂空 |
+| **动画** | glb node TRS 刚体动画：循环播放 + 触发播放（once/loop）+ 服务端同步 |
+| **PBR** | Iris 光影下法线贴图 / 金属 / 粗糙度生效（labPBR） |
+| **权威摆放** | 坐标 + yaw + scale 摆放，SavedData 持久化，重进恢复 |
+| **碰撞** | `col:` 前缀碰撞盒 → 多 AABB 实体碰撞，支持可进入建筑 |
+| **交互** | 右键开关门（`col:xxx@AnimName`），部件级独立触发 |
+| **剧情联动** | 可选集成 StoryCore：剧情脚本 action 节点驱动模型动画 |
 
-Additional Resources: 
-==========
-Community Documentation: https://docs.neoforged.net/  
-NeoForged Discord: https://discord.neoforged.net/
+---
+
+## 安装
+
+1. 将 `polarisobjuilder-1.0.0.jar` 放入游戏 `mods/` 目录
+2. 需要 NeoForge 21.1.248 + Minecraft 1.21.1
+
+**可选依赖**（缺省时功能自动降级，模组独立可用）：
+- **Iris / Oculus**：开启 PBR（法线/金属/粗糙）与光影支持
+- **polarisstorycore**：开启剧情 action 联动（`polarisobjuilder:anim`）
+
+---
+
+## 模型放置
+
+将 `.obj` / `.glb` 文件放入：
+
+```
+config/polarisobjuilder/models/
+```
+
+引用路径即相对该目录（如 `models/building.glb`，或直接用文件名 `building.glb`）。
+
+---
+
+## 使用命令
+
+### 摆放与管理（权威）
+
+```
+/objplace <x y z> <yaw> <scale> <ref>    # 摆放模型到指定坐标（支持 ~ 相对坐标）
+/objlist                                  # 列出所有摆放
+/objremove <id>                           # 移除指定摆放
+/objclear                                 # 清空全部摆放
+```
+
+示例：`/objplace ~ ~1 ~ 0 1.0 models/door.glb`（玩家脚下，yaw=0，1:1）
+
+### 动画控制
+
+```
+/glbanim play <name> once|loop            # 触发动画播放
+/glbanim stop <name>                      # 停止（保持当前姿势）
+/glbanim reset <name>                     # 重置（回初始姿势）
+```
+
+### 快捷导入（调试用，非持久化）
+
+```
+/glbdomain [scale] <file>                 # glb 静态导入（摆玩家附近）
+/objdomain [scale] <file>                 # OBJ 纯视觉导入
+```
+
+---
+
+## 模型制作约定（Blender）
+
+| 命名 | 语义 |
+|---|---|
+| `col:xxx` | 碰撞盒（box 物体，不渲染，仅阻挡） |
+| `col:xxx@AnimName` | 动态碰撞盒 + 右键交互（门）：右键在开/关间切换，联动 `AnimName` 动画 |
+
+- 碰撞盒 = 普通 box 物体，命名加 `col:` 前缀，与模型同一 `.glb` 文件导出
+- **薄墙厚度 ≥ 0.25 格**，避免玩家高速穿墙
+- 想挡的地方放盒，想空的地方（门洞/内部）不放盒 → 天然支持可进入建筑
+- 带 `col:` 盒的模型摆放 yaw 限 0/90/180/270（碰撞盒须轴对齐）
+
+---
+
+## 剧情联动（可选）
+
+安装 StoryCore 后，剧情脚本可用 action 节点驱动模型动画：
+
+```json
+{
+  "id": "open_door",
+  "type": "action",
+  "action": "polarisobjuilder:anim",
+  "actionParams": { "name": "OpenDoor", "mode": "once" }
+}
+```
+
+---
+
+## 开发者构建
+
+```bash
+.\gradlew.bat build --no-configuration-cache --offline "-Dorg.gradle.jvmargs=-Xmx2G -XX:MaxMetaspaceSize=1G"
+```
+
+产物：`build/libs/polarisobjuilder-1.0.0.jar`
+
+---
+
+## 许可
+
+All Rights Reserved

@@ -105,6 +105,19 @@ public class PolarisObjuilderClient {
                 .then(Commands.argument("file", StringArgumentType.greedyString())
                         .executes(ctx -> ObjImportCommand.domainLoad(ctx.getSource(),
                                 StringArgumentType.getString(ctx, "file")))));
+        // /glbdomain [scale] [file] —— glb（glTF 2.0）静态导入（与 objdomain 并存）
+        var glbScale = Commands.argument("scale", FloatArgumentType.floatArg(0.01f, 100f))
+                .executes(ctx -> ObjImportCommand.glbDomain(ctx.getSource(), null,
+                        FloatArgumentType.getFloat(ctx, "scale")))
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.glbDomain(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file"),
+                                FloatArgumentType.getFloat(ctx, "scale"))));
+        dispatcher.register(Commands.literal("glbdomain")
+                .then(glbScale)
+                .then(Commands.argument("file", StringArgumentType.greedyString())
+                        .executes(ctx -> ObjImportCommand.glbDomain(ctx.getSource(),
+                                StringArgumentType.getString(ctx, "file"), 1f))));
     }
 
     @SubscribeEvent
