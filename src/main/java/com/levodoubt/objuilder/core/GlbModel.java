@@ -311,15 +311,26 @@ public class GlbModel {
         return build(prims, fx, fy, fz, hasTexFlags(prims));
     }
 
-    /** prims 下标 → 该图元材质是否有贴图（无贴图材质的原始 UV 常为全 0 → 展平时用位置投影替换） */
+    /**
+     * prims 下标 → 该图元材质是否有【任意】贴图（base/金属粗糙/法线/自发光）。
+     * 无贴图材质的原始 UV 常为全 0 → 展平时用位置投影替换；但只要材质带任意一张贴图
+     * （如纯色火炬只有法线/粗糙贴图而无 base），就必须保留真实 UV，否则法线/粗糙纹路
+     * 会用世界坐标投影采样 → 纹路被缩放、重复排布。
+     */
     private boolean[] hasTexFlags(List<WorldPrim> prims) {
         boolean[] flags = new boolean[prims.size()];
         for (int i = 0; i < prims.size(); i++) {
             WorldPrim p = prims.get(i);
             flags[i] = p.materialId >= 0 && p.materialId < materials.size()
-                    && materials.get(p.materialId).baseColorTexture >= 0;
+                    && hasAnyTexture(materials.get(p.materialId));
         }
         return flags;
+    }
+
+    /** 材质是否带任意贴图（base / metallicRoughness / normal / emissive） */
+    private static boolean hasAnyTexture(Material m) {
+        return m.baseColorTexture >= 0 || m.metallicRoughnessTexture >= 0
+                || m.normalTexture >= 0 || m.emissiveTexture >= 0;
     }
 
     /** 世界几何 → 局部三角形（局部 = 世界 - 基准原点）。hasTexByPrim = prims 下标 → 该图元材质是否有贴图 */

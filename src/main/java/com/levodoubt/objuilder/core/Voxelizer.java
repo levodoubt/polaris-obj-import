@@ -378,17 +378,9 @@ public class Voxelizer {
     public static DomainResult visualize(ObjMesh mesh, ProgressCallback progress) {
         int n = mesh.faces.size();
 
-        // 模型 AABB（中心 = 实体位置，格对齐）
-        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, minZ = Float.MAX_VALUE;
-        float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
-        for (ObjMesh.Vec3 v : mesh.vertices) {
-            minX = Math.min(minX, v.x()); maxX = Math.max(maxX, v.x());
-            minY = Math.min(minY, v.y()); maxY = Math.max(maxY, v.y());
-            minZ = Math.min(minZ, v.z()); maxZ = Math.max(maxZ, v.z());
-        }
-        int ox = (int) Math.floor((minX + maxX) / 2.0);
-        int oy = (int) Math.floor((minY + maxY) / 2.0);
-        int oz = (int) Math.floor((minZ + maxZ) / 2.0);
+        // 几何基准 = 模型原点（OBJ 文件坐标原点 0,0,0），非 AABB 中心——
+        // 摆放坐标对齐模型原点（与 glb flatten 修复一致），大模型剔除由 noCulling + getBoundingBoxForCulling 兜底
+        int ox = 0, oy = 0, oz = 0;
 
         List<Triangle> tris = new ArrayList<>(n);
         // 自发光格收集：自发光材质（Ke>0）三角形顶点所在格（世界格坐标），level 取 Ke 最大分量

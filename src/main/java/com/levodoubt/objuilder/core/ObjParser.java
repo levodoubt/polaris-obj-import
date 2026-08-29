@@ -31,7 +31,12 @@ public class ObjParser {
                             Float.parseFloat(sp[1]), Float.parseFloat(sp[2])));
                     case "vn" -> vns.add(new ObjMesh.Vec3(
                             Float.parseFloat(sp[1]), Float.parseFloat(sp[2]), Float.parseFloat(sp[3])));
-                    case "mtllib" -> mtlName = sp[1];
+                    case "mtllib" -> {
+                        // MTL 文件名可能含空格（如 "1 - 副本.mtl"）→ 不能按空白 split 取 sp[1]，
+                        // 取 "mtllib" 之后整段内容（trim 掉前后空白）
+                        int idx = line.indexOf(' ');
+                        mtlName = idx >= 0 ? line.substring(idx + 1).trim() : null;
+                    }
                     case "usemtl" -> currentMaterial = sp.length > 1 ? sp[1] : null;
                     case "f" -> {
                         int n = sp.length - 1;

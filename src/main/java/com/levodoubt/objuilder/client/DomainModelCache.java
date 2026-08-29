@@ -123,9 +123,11 @@ public class DomainModelCache {
         int size = baseImages != null ? baseImages.size() : 0;
         for (int i = 0; i < size; i++) {
             NativeImage base = baseImages.get(i);
-            if (base == null) continue;
             NativeImage normal = normalImages != null && i < normalImages.size() ? normalImages.get(i) : null;
             NativeImage specular = specularImages != null && i < specularImages.size() ? specularImages.get(i) : null;
+            // 无 base 贴图（纯色/自发光材质，如 GLB 无 baseColorTexture）：补白色 base，
+            // 但保留其法线/specular → 光影下法线/粗糙度/金属照常生效（不能整材质跳过）
+            if (base == null) base = whitePixel();
             if (normal == null) normal = neutralNormal();
             if (specular == null) specular = neutralSpecular();
             // register(String, DynamicTexture) 重载只收 DynamicTexture 且返回位置；ResourceLocation 重载接受 AbstractTexture 但返回 void
@@ -142,14 +144,19 @@ public class DomainModelCache {
 
     public static ResourceLocation defaultTexture() {
         if (DEFAULT_TEXTURE == null) {
-            NativeImage base = new NativeImage(NativeImage.Format.RGBA, 1, 1, false);
-            base.setPixelRGBA(0, 0, 0xFFFFFFFF); // 白色
             ResourceLocation loc = ResourceLocation.fromNamespaceAndPath("polarisobjuilder", "model_default_pbr");
             Minecraft.getInstance().getTextureManager().register(loc,
-                    new PbrCapableTexture(base, neutralNormal(), neutralSpecular()));
+                    new PbrCapableTexture(whitePixel(), neutralNormal(), neutralSpecular()));
             DEFAULT_TEXTURE = loc;
         }
         return DEFAULT_TEXTURE;
+    }
+
+    /** 1×1 白色像素（无 base 贴图材质的兜底 base，保留其 normal/specular 生效） */
+    private static NativeImage whitePixel() {
+        NativeImage img = new NativeImage(NativeImage.Format.RGBA, 1, 1, false);
+        img.setPixelRGBA(0, 0, 0xFFFFFFFF); // 白色
+        return img;
     }
 
     /** 中性法线贴图：切线空间法线 (0,0,1) → GL RGB (0.5,0.5,1.0)。NativeImage 为 ABGR 布局 */
