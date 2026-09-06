@@ -24,6 +24,7 @@
 | **碰撞** | `col:` 前缀碰撞盒 → 多 AABB 实体碰撞，支持可进入建筑 |
 | **交互** | 右键开关门（`col:xxx@AnimName`），部件级独立触发 |
 | **剧情联动** | 可选集成 StoryCore：剧情脚本 action 节点驱动模型动画 |
+| **性能优化** | 静态模型 GPU 常驻 VBO 直绘（消除每帧 CPU 顶点提交）；阴影 pass 细分 LOD + 独立缓冲 + 单面 CULL，超大模型帧率稳定 |
 
 ---
 
@@ -115,7 +116,7 @@ config/polarisobjuilder/models/
 .\gradlew.bat build --no-configuration-cache --offline "-Dorg.gradle.jvmargs=-Xmx2G -XX:MaxMetaspaceSize=1G"
 ```
 
-产物：`build/libs/polarisobjuilder-1.0.0.jar`
+产物：`build/libs/polarisobjuilder-0.2.0.jar`
 
 ---
 

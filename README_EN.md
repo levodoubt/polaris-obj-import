@@ -115,7 +115,7 @@ With StoryCore installed, story scripts can drive model animations via action no
 .\gradlew.bat build --no-configuration-cache --offline "-Dorg.gradle.jvmargs=-Xmx2G -XX:MaxMetaspaceSize=1G"
 ```
 
-Output: `build/libs/polarisobjuilder-1.0.0.jar`
+Output: `build/libs/polarisobjuilder-0.2.0.jar`
 
 ---
 
