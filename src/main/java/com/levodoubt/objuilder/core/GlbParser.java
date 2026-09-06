@@ -111,7 +111,11 @@ public class GlbParser {
                 } else {
                     meshes = new int[0];
                 }
-                model.nodes.add(new GlbModel.Node(nname, matrix, translation, rotation, scale, children, meshes));
+                GlbModel.Node node = new GlbModel.Node(nname, matrix, translation, rotation, scale, children, meshes);
+                if (o.has("weights")) { // node 级 morph 权重（实例化，覆盖 mesh.weights）
+                    node.weights = readFloatArr(o.get("weights"));
+                }
+                model.nodes.add(node);
             }
         }
 
@@ -150,9 +154,37 @@ public class GlbParser {
                     }
                     int mat = po.has("material") ? po.get("material").getAsInt() : -1;
                     int mode = optInt(po, "mode", 4);
-                    prims.add(new GlbModel.Primitive(indices, pos, nrm, uv, mat, mode));
+                    // morph targets（顶点动画，网格动画）：每 target 的 POSITION/NORMAL delta accessor
+                    float[][] morphPos = null;
+                    float[][] morphNrm = null;
+                    if (po.has("targets")) {
+                        JsonArray tArr = po.getAsJsonArray("targets");
+                        int nT = tArr.size();
+                        if (nT > 0) {
+                            morphPos = new float[nT][];
+                            morphNrm = new float[nT][];
+                            for (int t = 0; t < nT; t++) {
+                                JsonObject target = tArr.get(t).getAsJsonObject();
+                                if (target.has("POSITION")) {
+                                    morphPos[t] = readAccessor(
+                                            accessorsArr.get(target.get("POSITION").getAsInt()).getAsJsonObject(),
+                                            bufferViewsArr, bin);
+                                }
+                                if (target.has("NORMAL")) {
+                                    morphNrm[t] = readAccessor(
+                                            accessorsArr.get(target.get("NORMAL").getAsInt()).getAsJsonObject(),
+                                            bufferViewsArr, bin);
+                                }
+                            }
+                        }
+                    }
+                    prims.add(new GlbModel.Primitive(indices, pos, nrm, uv, mat, mode, morphPos, morphNrm));
                 }
-                model.meshes.add(new GlbModel.Mesh(mname, prims));
+                GlbModel.Mesh mesh = new GlbModel.Mesh(mname, prims);
+                if (o.has("weights")) { // mesh 级 morph 权重（静态默认；node.weights 可覆盖）
+                    mesh.weights = readFloatArr(o.get("weights"));
+                }
+                model.meshes.add(mesh);
             }
         }
 
@@ -207,7 +239,9 @@ public class GlbParser {
                     }
                 }
                 String alpha = optString(o, "alphaMode", "OPAQUE");
-                GlbModel.Material mat = new GlbModel.Material(bcf, bct, metallic, rough, mrt, nt, emf, et, ems, alpha);
+                // MASK 模式的 alpha 裁剪阈值（glTF 标准，默认 0.5）；Blender CLIP 混合模式会导出该字段
+                float alphaCutoff = o.has("alphaCutoff") ? o.get("alphaCutoff").getAsFloat() : 0.5f;
+                GlbModel.Material mat = new GlbModel.Material(bcf, bct, metallic, rough, mrt, nt, emf, et, ems, alpha, alphaCutoff);
                 mat.doubleSided = o.has("doubleSided") && o.get("doubleSided").getAsBoolean();
                 mat.texOffsetU = tOffU; mat.texOffsetV = tOffV;
                 mat.texScaleU = tScaleU; mat.texScaleV = tScaleV;
@@ -266,9 +300,10 @@ public class GlbParser {
                         continue;
                     }
                     String path = optString(target, "path", "");
-                    if (!path.equals("translation") && !path.equals("rotation") && !path.equals("scale")) {
-                        // 仅刚体动画：morph（weights）等一律跳过（系列已砍）
-                        PolarisObjuilder.LOGGER.warn("[Glb] 动画 '{}' channel path='{}' 跳过（仅支持 TRS，morph 已砍）", aname, path);
+                    if (!path.equals("translation") && !path.equals("rotation")
+                            && !path.equals("scale") && !path.equals("weights")) {
+                        // 仅刚体 TRS + morph 权重动画（网格动画）：其它 path（如 pointer 扩展）跳过
+                        PolarisObjuilder.LOGGER.warn("[Glb] 动画 '{}' channel path='{}' 跳过（不支持的 path）", aname, path);
                         continue;
                     }
                     int nodeIdx = target.get("node").getAsInt();
@@ -429,6 +464,16 @@ public class GlbParser {
         JsonArray arr = e.getAsJsonArray();
         float[] out = new float[n];
         for (int i = 0; i < n && i < arr.size(); i++) {
+            out[i] = arr.get(i).getAsFloat();
+        }
+        return out;
+    }
+
+    /** 读取 JSON float 数组（morph weights 等） */
+    private static float[] readFloatArr(JsonElement e) {
+        JsonArray arr = e.getAsJsonArray();
+        float[] out = new float[arr.size()];
+        for (int i = 0; i < arr.size(); i++) {
             out[i] = arr.get(i).getAsFloat();
         }
         return out;

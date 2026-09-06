@@ -51,6 +51,9 @@ public class CustomRenderTypes extends RenderType {
                             .setLightmapState(LIGHTMAP)
                             .setOverlayState(OVERLAY)
                             .setCullState(CULL)
+                            // 只写颜色不写深度（原版半透明实体同款）：否则半透明面写入 depthtex，
+                            // 光影（deferred）下会遮挡后续光照/阴影，表现为"光线无法穿透 alpha<1 模型"
+                            .setWriteMaskState(COLOR_WRITE)
                             .createCompositeState(true)));
 
     /**
@@ -107,5 +110,7 @@ public class CustomRenderTypes extends RenderType {
                             .setLightmapState(LIGHTMAP)
                             .setOverlayState(OVERLAY)
                             .setCullState(NO_CULL)
+                            // 只写颜色不写深度（同上，避免光影下半透明面遮挡光照）
+                            .setWriteMaskState(COLOR_WRITE)
                             .createCompositeState(true)));
 }

@@ -170,6 +170,7 @@ public class PlacementModelLoader {
         List<NativeImage> normals = ObjImportCommand.glbMaterialNormalImages(model);
         List<NativeImage> speculars = ObjImportCommand.glbMaterialSpecularImages(model);
         ObjImportCommand.fillBaseColorsForGlbPbr(textures, normals, speculars, model);
+        ObjImportCommand.binarizeGlbMaskAlphas(textures, model); // MASK alpha 二值化（shadow pass 正确镂空，2.1.10 问题 2）
         Map<Integer, ResourceLocation> texMap = DomainModelCache.registerPbrTextures(textures, normals, speculars);
         DomainModelCache.setMaterialColors(modelId, ObjImportCommand.glbMaterialColors(model));
         DomainModelCache.setMaterialEmissive(modelId, ObjImportCommand.glbMaterialEmissive(model));
@@ -233,6 +234,7 @@ public class PlacementModelLoader {
                 ObjImportCommand.materialTexturePaths(mesh), objFile);
         List<NativeImage> speculars = ObjImportCommand.objMaterialSpecularImages(mesh);
         ObjImportCommand.fillBaseColorsForObjPbr(textures, speculars, mesh);
+        ObjImportCommand.binarizeObjMaskAlphas(textures, mesh, objFile); // MASK alpha 合成+二值化（2.1.10 问题 2）
         Map<Integer, ResourceLocation> texMap = DomainModelCache.registerPbrTextures(textures, null, speculars);
         DomainModelCache.setMaterialColors(modelId, ObjImportCommand.materialColors(mesh));
         DomainModelCache.setMaterialEmissive(modelId, ObjImportCommand.materialEmissive(mesh));

@@ -27,6 +27,8 @@ public class GlbModel {
         public final float[] scale;       // [x,y,z] 或 null
         public final int[] children;      // 子 node 索引（nodes 全局下标）
         public final int[] meshes;        // mesh 索引（空 = 纯变换节点）
+        /** morph 权重（node 级；weights 动画通道运行时写回；null = 无） */
+        public float[] weights;
 
         public Node(String name, float[] matrix, float[] translation, float[] rotation,
                     float[] scale, int[] children, int[] meshes) {
@@ -40,7 +42,7 @@ public class GlbModel {
         }
     }
 
-    /** 图元：一个网格的几何 + 材质引用（mode=4 TRIANGLES） */
+    /** 图元：一个网格的几何 + 材质引用（mode=4 TRIANGLES）+ morph targets */
     public static final class Primitive {
         public final int[] indices;      // 三角形顶点索引（null = 非索引网格，按序每 3 个一组）
         public final float[] positions;  // count*3
@@ -48,25 +50,43 @@ public class GlbModel {
         public final float[] uvs;        // count*2 或 null
         public final int materialIndex;  // materials 下标，-1 = 无材质
         public final int mode;           // glTF primitive mode（4 = TRIANGLES）
+        /** morph targets（每个 = 一个 target 的 POSITION delta，count*3，与 positions 顶点对齐；null = 无） */
+        public final float[][] morphPositions;
+        /** morph targets 的 NORMAL delta（同上，可为 null；null = 插值后回退面法线） */
+        public final float[][] morphNormals;
 
         public Primitive(int[] indices, float[] positions, float[] normals, float[] uvs,
                          int materialIndex, int mode) {
+            this(indices, positions, normals, uvs, materialIndex, mode, null, null);
+        }
+
+        public Primitive(int[] indices, float[] positions, float[] normals, float[] uvs,
+                         int materialIndex, int mode, float[][] morphPositions, float[][] morphNormals) {
             this.indices = indices;
             this.positions = positions;
             this.normals = normals;
             this.uvs = uvs;
             this.materialIndex = materialIndex;
             this.mode = mode;
+            this.morphPositions = morphPositions;
+            this.morphNormals = morphNormals;
         }
 
         public int vertexCount() {
             return positions.length / 3;
+        }
+
+        /** 是否带 morph targets（顶点动画） */
+        public boolean hasMorph() {
+            return morphPositions != null && morphPositions.length > 0;
         }
     }
 
     public static final class Mesh {
         public final String name;
         public final List<Primitive> primitives;
+        /** mesh 级 morph 权重（glTF mesh.weights 静态值；null = 无） */
+        public float[] weights;
 
         public Mesh(String name, List<Primitive> primitives) {
             this.name = name;
@@ -85,11 +105,11 @@ public class GlbModel {
         }
     }
 
-    /** 动画通道：单个 node 的单个 TRS 路径关键帧。 */
+    /** 动画通道：单个 node 的单个 TRS/weights 路径关键帧。 */
     public static final class Channel {
         /** 目标 node 下标（nodes 全局下标） */
         public final int nodeIndex;
-        /** translation / rotation / scale（weights=morph 已在解析层跳过） */
+        /** translation / rotation / scale / weights（morph 权重动画） */
         public final String path;
         /** STEP / LINEAR / CUBICSPLINE */
         public final String interpolation;
@@ -106,8 +126,14 @@ public class GlbModel {
             this.values = values;
         }
 
-        /** 每帧分量数：translation/scale = 3，rotation = 4 */
+        /** 每帧分量数：rotation = 4；translation/scale = 3；weights 从 values 长度推断（target 数量） */
         public int components() {
+            if ("weights".equals(path)) {
+                if (times.length == 0 || values.length == 0) return 0;
+                boolean cubic = "CUBICSPLINE".equalsIgnoreCase(interpolation);
+                int perKey = cubic ? values.length / (times.length * 3) : values.length / times.length;
+                return Math.max(1, perKey);
+            }
             return switch (path) {
                 case "rotation" -> 4;
                 default -> 3;
@@ -128,6 +154,8 @@ public class GlbModel {
         /** 自发光强度（KHR_materials_emissive_strength 扩展 emissiveStrength，默认 1；如 Blender 导出 10） */
         public final float emissiveStrength;
         public final String alphaMode;        // OPAQUE / MASK / BLEND
+        /** MASK 模式的 alpha 裁剪阈值（glTF 标准 material.alphaCutoff，默认 0.5）：有效 alpha < cutoff 的像素被 discard */
+        public final float alphaCutoff;
         /** doubleSided：true = 双面渲染（禁用背面剔除）。glTF 语义，Blender 双面材质导出后绕序常不一致 */
         public boolean doubleSided = false;
         /** baseColorTexture 的 KHR_texture_transform（Blender Mapping 导出）：uv' = R(rot)*(uv*scale)+offset，作用于 glTF UV 空间（v 左上） */
@@ -137,7 +165,7 @@ public class GlbModel {
                         float metallicFactor, float roughnessFactor, int metallicRoughnessTexture,
                         int normalTexture,
                         float[] emissiveFactor, int emissiveTexture, float emissiveStrength,
-                        String alphaMode) {
+                        String alphaMode, float alphaCutoff) {
             this.baseColorFactor = baseColorFactor;
             this.baseColorTexture = baseColorTexture;
             this.metallicFactor = metallicFactor;
@@ -148,6 +176,7 @@ public class GlbModel {
             this.emissiveTexture = emissiveTexture;
             this.emissiveStrength = emissiveStrength;
             this.alphaMode = alphaMode;
+            this.alphaCutoff = alphaCutoff;
         }
     }
 
@@ -394,9 +423,13 @@ public class GlbModel {
         if (n.name != null && n.name.startsWith("col:")) return; // 碰撞盒不渲染
         float[] world = composeWorld(n, nodeIdx, parent, scale, anim);
         for (int mi : n.meshes) {
+            if (mi < 0 || mi >= meshes.size()) continue;
             Mesh mesh = meshes.get(mi);
+            // 当前节点 morph 权重：动画状态 > node.weights > mesh.weights
+            float[] weights = anim != null ? anim.weightsOf(nodeIdx) : null;
+            if (weights == null) weights = n.weights != null ? n.weights : mesh.weights;
             for (Primitive p : mesh.primitives) {
-                out.add(transformPrimitive(p, world));
+                out.add(transformPrimitive(p, world, weights));
             }
         }
         for (int c : n.children) {
@@ -404,21 +437,50 @@ public class GlbModel {
         }
     }
 
-    /** 图元顶点应用全局变换（位置 + 法线 3x3 旋转），生成世界几何 */
-    private static WorldPrim transformPrimitive(Primitive p, float[] world) {
+    /**
+     * 图元顶点应用全局变换（位置 + 法线 3x3 旋转）+ morph 插值，生成世界几何。
+     * morph：局部坐标顶点 = base + Σ weights[i]×delta_i（POSITION），法线同理（NORMAL delta，无则保持 base），
+     * 再整体乘 node 变换（位置含平移，法线仅 3x3 旋转部分归一化）。
+     */
+    private static WorldPrim transformPrimitive(Primitive p, float[] world, float[] weights) {
         int count = p.vertexCount();
+        boolean morph = p.hasMorph() && weights != null && weights.length > 0;
+        int nTargets = p.morphPositions != null ? p.morphPositions.length : 0;
         float[] pos = new float[p.positions.length];
         for (int i = 0; i < count; i++) {
             float x = p.positions[i * 3], y = p.positions[i * 3 + 1], z = p.positions[i * 3 + 2];
+            if (morph) {
+                for (int t = 0; t < nTargets && t < weights.length; t++) {
+                    float[] d = p.morphPositions[t];
+                    float w = weights[t];
+                    if (d != null && w != 0f) {
+                        x += w * d[i * 3];
+                        y += w * d[i * 3 + 1];
+                        z += w * d[i * 3 + 2];
+                    }
+                }
+            }
             pos[i * 3] = world[0] * x + world[4] * y + world[8] * z + world[12];
             pos[i * 3 + 1] = world[1] * x + world[5] * y + world[9] * z + world[13];
             pos[i * 3 + 2] = world[2] * x + world[6] * y + world[10] * z + world[14];
         }
         float[] nrm = null;
         if (p.normals != null) {
+            boolean nrmMorph = morph && p.morphNormals != null && p.morphNormals.length >= nTargets;
             nrm = new float[p.normals.length];
             for (int i = 0; i < count; i++) {
                 float x = p.normals[i * 3], y = p.normals[i * 3 + 1], z = p.normals[i * 3 + 2];
+                if (nrmMorph) {
+                    for (int t = 0; t < nTargets && t < weights.length; t++) {
+                        float[] d = p.morphNormals[t];
+                        float w = weights[t];
+                        if (d != null && w != 0f) {
+                            x += w * d[i * 3];
+                            y += w * d[i * 3 + 1];
+                            z += w * d[i * 3 + 2];
+                        }
+                    }
+                }
                 float nx = world[0] * x + world[4] * y + world[8] * z;
                 float ny = world[1] * x + world[5] * y + world[9] * z;
                 float nz = world[2] * x + world[6] * y + world[10] * z;

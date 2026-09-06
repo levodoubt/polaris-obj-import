@@ -63,6 +63,8 @@ public class GlbAnimationController {
     private final Map<Integer, float[]> rotations = new HashMap<>();
     /** nodeIndex → 当前动画 scale（[x,y,z]） */
     private final Map<Integer, float[]> scales = new HashMap<>();
+    /** nodeIndex → 当前 morph 权重（顶点动画 weights 通道写回；无 weights 动画但带静态权重时也初始化） */
+    private final Map<Integer, float[]> weightsByNode = new HashMap<>();
     /** 所有动画中最大的关键帧末时间（秒），调试/日志用 */
     private final float duration;
 
@@ -91,6 +93,20 @@ public class GlbAnimationController {
             st.duration = animDur;
             anims.put(anim.name, st);
             maxDuration = Math.max(maxDuration, animDur);
+        }
+        // 初始化 morph 权重：node.weights（实例化覆盖）> mesh.weights（静态默认）；无 → 不登记
+        for (int ni = 0; ni < model.nodes.size(); ni++) {
+            GlbModel.Node node = model.nodes.get(ni);
+            if (node.weights != null) {
+                weightsByNode.put(ni, node.weights.clone());
+            } else if (node.meshes.length > 0) {
+                for (int mi : node.meshes) {
+                    if (mi >= 0 && mi < model.meshes.size() && model.meshes.get(mi).weights != null) {
+                        weightsByNode.put(ni, model.meshes.get(mi).weights.clone());
+                        break;
+                    }
+                }
+            }
         }
         this.duration = maxDuration;
     }
@@ -141,8 +157,19 @@ public class GlbAnimationController {
             case "rotation" -> rotations.computeIfAbsent(ch.nodeIndex, k -> new float[4]);
             case "translation" -> translations.computeIfAbsent(ch.nodeIndex, k -> new float[3]);
             case "scale" -> scales.computeIfAbsent(ch.nodeIndex, k -> new float[3]);
+            case "weights" -> weightsByNode.computeIfAbsent(ch.nodeIndex, k -> new float[ch.components()]);
             default -> new float[0];
         };
+    }
+
+    /** node 当前 morph 权重（无 = null；动画 weights 通道持续写回） */
+    public float[] weightsOf(int nodeIndex) {
+        return weightsByNode.get(nodeIndex);
+    }
+
+    /** 是否有任何节点带 morph 权重（顶点动画） */
+    public boolean hasMorphWeights() {
+        return !weightsByNode.isEmpty();
     }
 
     /**
@@ -208,7 +235,7 @@ public class GlbAnimationController {
         if (st != null) st.playing = false;
     }
 
-    /** 重置：回初始姿势（清空该动画所有 channel 输出 → flatten 走初始 TRS） */
+    /** 重置：回初始姿势（清空该动画所有 channel 输出 → flatten 走初始 TRS/权重） */
     public void reset(String name) {
         AnimState st = anims.get(name);
         if (st == null) return;
@@ -218,6 +245,7 @@ public class GlbAnimationController {
                 case "rotation" -> rotations.remove(node);
                 case "translation" -> translations.remove(node);
                 case "scale" -> scales.remove(node);
+                case "weights" -> weightsByNode.remove(node);
             }
         }
         st.playing = false;

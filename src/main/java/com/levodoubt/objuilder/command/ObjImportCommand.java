@@ -668,6 +668,7 @@ public class ObjImportCommand {
             List<NativeImage> textures = loadTextures(materialTexturePaths(finalMesh), finalObjFile);
             List<NativeImage> speculars = objMaterialSpecularImages(finalMesh);
             fillBaseColorsForObjPbr(textures, speculars, finalMesh);
+            binarizeObjMaskAlphas(textures, finalMesh, finalObjFile); // MASK alpha 合成+二值化（shadow pass 正确镂空）
             Map<Integer, ResourceLocation> texMap = DomainModelCache.registerPbrTextures(textures, null, speculars);
             DomainModelCache.setMaterialColors(modelId, materialColors(finalMesh));
             DomainModelCache.setMaterialEmissive(modelId, materialEmissive(finalMesh));
@@ -859,6 +860,7 @@ public class ObjImportCommand {
             List<NativeImage> normals = glbMaterialNormalImages(model);
             List<NativeImage> speculars = glbMaterialSpecularImages(model);
             fillBaseColorsForGlbPbr(textures, normals, speculars, model);
+            binarizeGlbMaskAlphas(textures, model); // MASK alpha 二值化（shadow pass 正确镂空，2.1.10 问题 2）
             Map<Integer, ResourceLocation> texMap = DomainModelCache.registerPbrTextures(textures, normals, speculars);
             DomainModelCache.setMaterialColors(modelId, glbMaterialColors(model));
             DomainModelCache.setMaterialEmissive(modelId, glbMaterialEmissive(model));
@@ -1009,6 +1011,116 @@ public class ObjImportCommand {
         }
         return s;
     }
+
+    // ===================== MASK alpha 二值化（2.1.10 光影问题探究·问题 2 落地） =====================
+
+    /**
+     * glb MASK 材质 alpha 二值化烘焙。必须在 registerPbrTextures 之前调用（直接改写待烘焙的 base 图）。
+     *
+     * <p>为什么必须二值化：主渲染 cutout（rendertype_entity_cutout）的 discard 阈值是 0.5，
+     * 但 <b>Photon shadow.fsh 的 discard 阈值是 0.1</b>（`if (base_color.a < 0.1) discard`）。
+     * 半透明窗户若只把 alphaMode 从 BLEND 改成 MASK（贴图/factor alpha 仍 0.3~0.5），
+     * shadow pass 里 0.4 &gt; 0.1 不 discard → 深度照写 shadowtex → 窗户仍被当作不透明投影体，
+     * "投影比人物大"的异常依旧，缓解落空。
+     *
+     * <p>二值化语义（glTF）：有效 alpha = tex.a × baseColorFactor[3]，&lt; alphaCutoff → 0，否则 → 255。
+     * 0/255 在任何 discard 阈值（0.1 或 0.5）下行为一致：
+     * 玻璃像素全 discard（主渲染不可见 + 不投影），窗框等不透明像素照常渲染与投影——
+     * 即"玻璃透明 + 窗框遮挡"的物理语义。
+     *
+     * <p>纯色 MASK 材质（无 baseColorTexture）：补 1×1 白色 base（RGB 留白，漫反射色由 COLORS 顶点色承载，
+     * 避免纹理×顶点色二次相乘变暗），alpha 按 factorA×cutoff 二值化——factorA&lt;cutoff（如玻璃 alpha 0.4）
+     * 时整材质像素全 discard。
+     */
+    public static void binarizeGlbMaskAlphas(List<NativeImage> bases, GlbModel model) {
+        if (bases == null) return;
+        for (int i = 0; i < model.materials.size() && i < bases.size(); i++) {
+            GlbModel.Material m = model.materials.get(i);
+            if (!"MASK".equalsIgnoreCase(m.alphaMode)) continue;
+            float cutoff = clamp01(m.alphaCutoff > 0f ? m.alphaCutoff : 0.5f);
+            float factorA = m.baseColorFactor != null ? clamp01(m.baseColorFactor[3]) : 1f;
+            NativeImage base = bases.get(i);
+            if (base != null) {
+                bases.set(i, binarizeImageAlpha(base, factorA, cutoff));
+            } else {
+                NativeImage img = new NativeImage(NativeImage.Format.RGBA, 1, 1, false);
+                int a = factorA >= cutoff ? 255 : 0;
+                img.setPixelRGBA(0, 0, (a << 24) | 0x00FFFFFF); // ABGR：RGB 白，A=二值化结果
+                bases.set(i, img);
+            }
+            PolarisObjuilder.LOGGER.info("[Glb] MASK 材质 #{} alpha 已二值化: cutoff={} factorA={}",
+                    i, cutoff, factorA);
+        }
+    }
+
+    /**
+     * OBJ MASK 材质 alpha 合成 + 二值化。必须在 registerPbrTextures 之前调用。
+     *
+     * <p>MTL map_d 语义：alpha 取自 map_d 贴图。此前实现仅当 map_d 与 map_Kd 同图（base 自带 alpha 通道）时
+     * MASK 才生效；map_d 独立成图时 alpha 被丢弃，cutout 无从裁剪。此方法统一处理：
+     * <ul>
+     *   <li>map_d == map_Kd（同图）：直接对 base 的 alpha 通道二值化（阈值 0.5，MTL 无 cutoff 概念）</li>
+     *   <li>map_d 独立成图：加载 map_d → 二值化 → 写入 base 的 alpha 通道
+     *       （base 缺失 → 补白色 base，漫反射色由 COLORS 承载；尺寸不一致按比例最近邻采样）</li>
+     * </ul>
+     * 二值化原因同 glb 路径：Photon shadow.fsh discard 阈值 0.1，非二值 alpha 在阴影 pass 穿透投影。
+     */
+    public static void binarizeObjMaskAlphas(List<NativeImage> bases, ObjMesh mesh, File objFile) {
+        if (bases == null) return;
+        for (int i = 0; i < mesh.materials.size() && i < bases.size(); i++) {
+            ObjMesh.Material m = mesh.materials.get(i);
+            if (m.mapD == null) continue;
+            NativeImage base = bases.get(i);
+            if (m.mapD.equals(m.mapKd)) {
+                // 同图：base 自带 alpha 通道，直接二值化
+                if (base != null) bases.set(i, binarizeImageAlpha(base, 1f, 0.5f));
+                continue;
+            }
+            // map_d 独立成图 → 加载并合成 alpha
+            List<NativeImage> loaded = loadTextures(List.of(m.mapD), objFile);
+            NativeImage alphaImg = loaded.isEmpty() ? null : loaded.get(0);
+            if (alphaImg == null) {
+                PolarisObjuilder.LOGGER.warn("[Objuilder] map_d 贴图加载失败，材质 '{}' MASK 镂空无效", m.name);
+                continue;
+            }
+            int bw = base != null ? base.getWidth() : alphaImg.getWidth();
+            int bh = base != null ? base.getHeight() : alphaImg.getHeight();
+            int aw = alphaImg.getWidth(), ah = alphaImg.getHeight();
+            NativeImage out = new NativeImage(NativeImage.Format.RGBA, bw, bh, false);
+            for (int y = 0; y < bh; y++) {
+                for (int x = 0; x < bw; x++) {
+                    int p = base != null ? base.getPixelRGBA(x, y) : 0x00FFFFFF; // 无 base → RGB 白
+                    int sx = Math.min(aw - 1, x * aw / bw);
+                    int sy = Math.min(ah - 1, y * ah / bh);
+                    int pa = (alphaImg.getPixelRGBA(sx, sy) >>> 24) & 0xFF;
+                    int na = pa / 255f >= 0.5f ? 255 : 0;
+                    out.setPixelRGBA(x, y, (p & 0x00FFFFFF) | (na << 24));
+                }
+            }
+            bases.set(i, out);
+            PolarisObjuilder.LOGGER.info("[Objuilder] 材质 '{}' map_d alpha 已合成并二值化 (map_d {}x{} → base {}x{})",
+                    m.name, aw, ah, bw, bh);
+        }
+    }
+
+    /**
+     * 把 base 图的 alpha 通道按 factorA×cutoff 二值化为 0/255，返回新图（RGBA，可能为入参的重建副本）。
+     * 始终重建而非原地改写：PNG 可能无 alpha 通道（NativeImage 为 RGB 格式，写 alpha 无效），
+     * 重建到 RGBA 保证 alpha 位真实存在。
+     */
+    private static NativeImage binarizeImageAlpha(NativeImage img, float factorA, float cutoff) {
+        NativeImage out = new NativeImage(NativeImage.Format.RGBA, img.getWidth(), img.getHeight(), false);
+        for (int y = 0; y < img.getHeight(); y++) {
+            for (int x = 0; x < img.getWidth(); x++) {
+                int p = img.getPixelRGBA(x, y); // ABGR 布局：bit24-31=A
+                int a = ((p >>> 24) & 0xFF) / 255f * factorA >= cutoff ? 255 : 0;
+                out.setPixelRGBA(x, y, (p & 0x00FFFFFF) | (a << 24));
+            }
+        }
+        img.close(); // 原图已被替换，释放本地内存（此时尚未注册到 GL）
+        return out;
+    }
+
 
     /** glb 材质 → doubleSided 的 materialId 集合（glTF doubleSided=true → 双面渲染 NO_CULL） */
     public static Set<Integer> glbDoubleSidedMaterials(GlbModel model) {

@@ -1,33 +1,31 @@
 package com.levodoubt.objuilder.client;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
-import com.levodoubt.objuilder.core.ObjMesh;
-import com.levodoubt.objuilder.core.Voxelizer;
 import com.levodoubt.objuilder.entity.DomainEntity;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
 
-import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
+import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.client.renderer.texture.TextureAtlas;
-import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.resources.ResourceLocation;
+
+import org.joml.Matrix3f;
+import org.joml.Matrix4f;
 
 /**
  * 共面域实体渲染器：把域的三角形网格直绘到世界。
  * - 顶点格式 POSITION_COLOR_TEX_LIGHTMAP_OVERLAY_NORMAL，保留顶点法线 → 光影下平滑光照
  * - 贴图：动态纹理（真实 GL 纹理）+ 顶点真实 UV 采样 → 逐像素贴图精度
- * - 光照：自发光 → 满光照；否则用框架传入的实体级光照 packedLight（原版实体同款），
- *   避免逐顶点采样整格光照造成的离散明暗块噪点
+ * - 光照：自发光 → 满光照；否则用框架传入的实体级光照 packedLight（原版实体同款）
  * - 实体渲染器已 translate 到实体位置（域原点），域几何为域局部坐标 → 直接提交
+ *
+ * <p>2.1.11 性能优化·CPU 提交批量化：不再逐三角形、逐顶点读 Triangle record，改为从
+ * {@link DomainModelCache#getRenderMesh} 取预烘焙的紧凑网格（连续 float[] + 材质 run），
+ * 内联 4x4/3x3 矩阵变换（消除每顶点 2 次 {@code new Vector3f()} 分配 + record 访问 + 每帧分组分配）。
  */
 public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
     public DomainEntityRenderer(EntityRendererProvider.Context ctx) {
@@ -57,18 +55,8 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
         } else {
             modelId = entity.getDomainId();
         }
-        List<Voxelizer.Triangle> tris = DomainModelCache.get(modelId);
-        if (tris == null || tris.isEmpty()) {
-            if (!warnedMissing) {
-                warnedMissing = true;
-                com.levodoubt.objuilder.PolarisObjuilder.LOGGER.warn(
-                        "[Objuilder] 域几何缺失 modelId={} cacheSize={}",
-                        modelId, DomainModelCache.size());
-            }
-            return;
-        }
-
-        // 摆放（ref 路径）应用 yaw + scale：几何为相对中心格的局部坐标，实体位置 = 摆放坐标
+        // 先应用摆放变换（与顶点渲染完全一致），之后 pose.last() 就是模型的局部→世界矩阵。
+        // 静态 VRAM 直绘与 CPU 紧凑网格两条路径都依赖它，故先 push。
         if (refPath) {
             pose.pushPose();
             pose.mulPose(Axis.YP.rotationDegrees(entity.getYRot()));
@@ -78,50 +66,50 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
             }
         }
 
-        TextureAtlasSprite fallback = DomainModelCache.fallbackSprite();
+        // 阴影 pass 用细分 LOD（大面拆分，边长 ≤4 格 → 阴影稳定），主 pass 用原始网格。
+        boolean shadowPass = ShadowPassDetect.isShadowPass();
 
-        // 无贴图时的白色回退 UV
-        float fallbackU = fallback != null ? fallback.getU(0.5f) : 0f;
-        float fallbackV = fallback != null ? fallback.getV(0.5f) : 0f;
-
-        PoseStack.Pose mat = pose.last();
-
-        // 按材质分组（保持顺序），每个材质一个 draw call（绑定各自纹理）
-        Map<Integer, List<Voxelizer.Triangle>> byMaterial = new LinkedHashMap<>();
-        for (Voxelizer.Triangle t : tris) {
-            byMaterial.computeIfAbsent(t.materialId(), k -> new ArrayList<>()).add(t);
+        // 方案 A：静态（非动画中）模型走 GPU 常驻 VBO 直绘——每帧仅 bind + drawWithShader，
+        // 消除每帧 CPU 顶点提交与 GPU 上传。动画模型返回 null → 回退下方 CPU 紧凑网格路径。
+        StaticModelBuffer staticBuf = DomainModelCache.getStaticBuffer(modelId, shadowPass, packedLight);
+        if (staticBuf != null) {
+            staticBuf.draw(pose.last());
+            if (refPath) {
+                pose.popPose();
+            }
+            return;
         }
 
-        for (Map.Entry<Integer, List<Voxelizer.Triangle>> entry : byMaterial.entrySet()) {
-            int matId = entry.getKey();
+        RenderMesh mesh = DomainModelCache.getRenderMesh(modelId, shadowPass);
+        if (mesh == null || mesh.vertexCount == 0) {
+            if (!warnedMissing) {
+                warnedMissing = true;
+                com.levodoubt.objuilder.PolarisObjuilder.LOGGER.warn(
+                        "[Objuilder] 域几何缺失 modelId={} cacheSize={}",
+                        modelId, DomainModelCache.size());
+            }
+            if (refPath) {
+                pose.popPose();
+            }
+            return;
+        }
+
+        // 取当前模型视图矩阵（含相机 + 实体变换）；内联变换避免 addVertex(Matrix4f)/setNormal(Pose) 的每顶点 Vector3f 分配
+        PoseStack.Pose entry = pose.last();
+        Matrix4f mat = entry.pose();
+        Matrix3f nrm = entry.normal();
+
+        for (int run = 0; run < mesh.runCount; run++) {
+            int matId = mesh.runMaterial[run];
             // 该材质的纹理（null = 无贴图 → 用默认白 + 中性 PBR，避免光影下 texture_s/n 缺失产生噪点）
             ResourceLocation matTex = DomainModelCache.texture(modelId, matId);
             boolean noTex = matTex == null;
-            // 该材质的漫反射颜色（无贴图材质用；有贴图则白，颜色由贴图承载）
-            float[] kd = noTex ? DomainModelCache.color(modelId, matId) : null;
-            // 该材质的自发光 Ke（>0 的材质发光，不受光照影响）
-            float[] em = DomainModelCache.emissive(modelId, matId);
-            boolean emissive = em != null;
             // 该材质的透明度（<1 = 半透明）
             float alpha = DomainModelCache.alpha(modelId, matId);
             boolean translucent = alpha < 1f;
-            float cr, cg, cb;
-            if (emissive) {
-                float kr = kd != null ? kd[0] : 1f;
-                float kg = kd != null ? kd[1] : 1f;
-                float kb = kd != null ? kd[2] : 1f;
-                cr = Math.min(1f, kr + em[0]);
-                cg = Math.min(1f, kg + em[1]);
-                cb = Math.min(1f, kb + em[2]);
-            } else {
-                cr = kd != null ? kd[0] : 1f;
-                cg = kd != null ? kd[1] : 1f;
-                cb = kd != null ? kd[2] : 1f;
-            }
-            // MASK 材质（alphaMode=MASK，B1 收尾·事项 5）→ alpha-test cutout 渲染（贴图 alpha 通道镂空，硬裁剪）；
-            // doubleSided 材质（glTF doubleSided=true，Blender 双面导出绕序常不一致）→ 双面渲染 NO_CULL；
-            // 单面材质 → CULL（避免 z-fighting）；半透明（alpha<1）→ translucent 混合
-            boolean doubleSided = DomainModelCache.isDoubleSided(modelId, matId);
+            // MASK 材质（alphaMode=MASK）→ alpha-test cutout；doubleSided 材质 → NO_CULL；
+            // 阴影 pass 强制单面 CULL（doubleSided 薄壳两面写深度互搏 → 自阴影斑块）。
+            boolean doubleSided = DomainModelCache.isDoubleSided(modelId, matId) && !shadowPass;
             boolean masked = DomainModelCache.isMasked(modelId, matId);
             RenderType rt;
             if (masked) {
@@ -136,48 +124,35 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
             }
             VertexConsumer vc = buffer.getBuffer(rt);
 
-            for (Voxelizer.Triangle t : entry.getValue()) {
-                ObjMesh.Vec3 fn = t.n();
-                for (int i = 0; i < 3; i++) {
-                    ObjMesh.Vec3 p = t.p(i);
-                    ObjMesh.Vec3 vn = t.vn(i) != null ? t.vn(i) : fn;
-                    // UV：无贴图材质用「按面法线选投影轴」生成梯度 UV（纯色 glb/obj 的 UV 常全 0 无梯度，
-                    // 光影下 tangent 退化 → 法线贴图解码乱 → 噪点；固定 x+z/y 投影在水平面会 v 梯度为 0，
-                    // 故按法线主分量选面内两轴，保证任意朝向的面都有梯度）；有贴图才用真实 UV。
-                    // 注意：UV 不做逐顶点 wrap01（取小数）——纹理为 REPEAT 模式由 GPU 自动平铺；
-                    // 取模会破坏同一三角形三个顶点 UV 的线性连续性（跨整数边界时插值横扫整张纹理 → 贴图拉伸 + 光影 tangent 突变阴影）
-                    float u, v;
-                    if (noTex) {
-                        float ax = Math.abs(fn.x()), ay = Math.abs(fn.y()), az = Math.abs(fn.z());
-                        if (ay >= ax && ay >= az) {
-                            // 法线朝 Y（水平面）→ 用 XZ 投影
-                            u = p.x();
-                            v = p.z();
-                        } else if (ax >= az) {
-                            // 法线朝 X → 用 ZY 投影
-                            u = p.z();
-                            v = p.y();
-                        } else {
-                            // 法线朝 Z → 用 XY 投影
-                            u = p.x();
-                            v = p.y();
-                        }
-                    } else if (t.uv(i) != null) {
-                        u = t.uv(i).u();
-                        v = 1f - t.uv(i).v(); // glb UV 已在展平时翻转过一次，此处再翻 = 净不翻（保持 transform 后 glTF v 原样，REPEAT 平铺）
-                    } else {
-                        u = fallbackU;
-                        v = fallbackV;
-                    }
-                    // 自发光：满光照（不受环境明暗影响）；否则用框架传入的实体级光照（原版实体同款）
-                    int light = emissive ? LightTexture.pack(15, 15) : packedLight;
-                    vc.addVertex(mat, p.x(), p.y(), p.z())
-                            .setColor(cr, cg, cb, alpha) // 无贴图用 Kd 颜色，自发光加 Ke，有贴图白；alpha=材质透明度
-                            .setUv(u, v)
-                            .setOverlay(net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY)
-                            .setLight(light)
-                            .setNormal(mat, vn.x(), vn.y(), vn.z());
-                }
+            // 每 run 预计算的颜色/光照（材质恒定，循环不变量）
+            int packed = mesh.runColor[run];
+            int cr = (packed >> 16) & 0xFF;
+            int cg = (packed >> 8) & 0xFF;
+            int cb = packed & 0xFF;
+            int ca = (packed >>> 24) & 0xFF;
+            int light = mesh.runLight[run] < 0 ? packedLight : mesh.runLight[run];
+
+            int start = mesh.runStart[run];
+            int end = start + mesh.runLength[run];
+            for (int vi = start; vi < end; vi++) {
+                int i3 = vi * 3;
+                float x = mesh.pos[i3], y = mesh.pos[i3 + 1], z = mesh.pos[i3 + 2];
+                // 内联 Matrix4f.transformPosition（列主序：m00..m02 为第一列/X 基，m30..m32 平移）
+                float wx = mat.m00() * x + mat.m10() * y + mat.m20() * z + mat.m30();
+                float wy = mat.m01() * x + mat.m11() * y + mat.m21() * z + mat.m31();
+                float wz = mat.m02() * x + mat.m12() * y + mat.m22() * z + mat.m32();
+                float xn = mesh.nrm[i3], yn = mesh.nrm[i3 + 1], zn = mesh.nrm[i3 + 2];
+                // 内联 Matrix3f.transform（法线只乘旋转部分，无需归一化，与原 setNormal(Pose) 一致）
+                float nx = nrm.m00() * xn + nrm.m10() * yn + nrm.m20() * zn;
+                float ny = nrm.m01() * xn + nrm.m11() * yn + nrm.m21() * zn;
+                float nz = nrm.m02() * xn + nrm.m12() * yn + nrm.m22() * zn;
+                int i2 = vi * 2;
+                vc.addVertex(wx, wy, wz)
+                        .setColor(cr, cg, cb, ca)
+                        .setUv(mesh.uv[i2], mesh.uv[i2 + 1])
+                        .setOverlay(OverlayTexture.NO_OVERLAY)
+                        .setLight(light)
+                        .setNormal(nx, ny, nz);
             }
         }
 

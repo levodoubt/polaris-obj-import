@@ -115,6 +115,12 @@ public class GlbAnimationManager {
         MODELS.remove(modelId);
     }
 
+    /** 该模型当前是否正在播放动画（几何每帧变化；供静态 VRAM 路径判断是否回退 CPU 路径） */
+    public static boolean isAnimating(int modelId) {
+        AnimatedModel am = MODELS.get(modelId);
+        return am != null && am.anim.isAnimating();
+    }
+
     /** 清空全部动画播放 */
     public static void clear() {
         MODELS.clear();
