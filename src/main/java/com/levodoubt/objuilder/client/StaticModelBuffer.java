@@ -2,6 +2,7 @@ package com.levodoubt.objuilder.client;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 import org.joml.Matrix4f;
 
@@ -33,7 +34,9 @@ import net.minecraft.resources.ResourceLocation;
  *       {@code pose.last().pose()}（含相机 + 实体 yaw/scale）在 drawWithShader 里变换——实体渲染阶段
  *       RenderSystem 的模型视图矩阵是恒等（顶点已被 PoseStack 预变换），不能用 RenderType.draw(MeshData) 的隐式矩阵。</li>
  *   <li>着色器状态用 {@link RenderType#setupRenderState()} / {@link RenderType#clearRenderState()}（public，
- *       走 RenderStateShard，Iris 兼容），配 {@code GameRenderer.getRendertypeEntity*Shader()} 显式 shader。</li>
+ *       走 RenderStateShard，Iris 兼容）；shader 以 getter 形式持有、每帧现取并经 {@code RenderSystem.getShader()}
+ *       解析——【不可缓存 ShaderInstance 实例】：Iris 重进世界/维度切换会销毁重建 pipeline（全部 ExtendedShader
+ *       与其 GlFramebuffer），缓存实例变野引用 → "Tried to use a destroyed GlResource" 崩溃。</li>
  *   <li>光照烘焙在构建期（自发光 → 满光照；否则用实体 packedLight）。与 MC 区块网格一样是「烘焙光」，
  *       动态光照变化不会自动反映（静态装饰模型可接受；后续可按 packedLight 变化触发重建）。</li>
  * </ul>
@@ -42,9 +45,12 @@ public final class StaticModelBuffer {
     private static final class Part {
         final VertexBuffer vbo;
         final RenderType renderType;
-        final ShaderInstance shader;
+        /** shader getter（如 GameRenderer::getRendertypeEntitySolidShader）——【禁止缓存 ShaderInstance 实例】：
+         * Iris 在重进世界/维度切换时销毁重建整个 pipeline（所有 ExtendedShader 及其 GlFramebuffer），
+         * 缓存的实例会变成野引用 → drawWithShader 时 apply() 绑定已销毁 framebuffer → 崩溃。每帧现取。 */
+        final Supplier<ShaderInstance> shader;
 
-        Part(VertexBuffer vbo, RenderType renderType, ShaderInstance shader) {
+        Part(VertexBuffer vbo, RenderType renderType, Supplier<ShaderInstance> shader) {
             this.vbo = vbo;
             this.renderType = renderType;
             this.shader = shader;
@@ -81,20 +87,20 @@ public final class StaticModelBuffer {
             boolean doubleSided = DomainModelCache.isDoubleSided(modelId, matId) && !shadowPass;
             boolean masked = DomainModelCache.isMasked(modelId, matId);
             RenderType rt;
-            ShaderInstance shader;
+            Supplier<ShaderInstance> shader;
             if (masked) {
                 rt = (doubleSided ? CustomRenderTypes.ENTITY_TRIANGLES_CUTOUT_DOUBLE_SIDED
                         : CustomRenderTypes.ENTITY_TRIANGLES_CUTOUT)
                         .apply(noTex ? DomainModelCache.defaultTexture() : matTex);
-                shader = GameRenderer.getRendertypeEntityCutoutShader();
+                shader = GameRenderer::getRendertypeEntityCutoutShader;
             } else {
                 rt = (doubleSided
                         ? (translucent ? CustomRenderTypes.ENTITY_TRIANGLES_TRANSLUCENT_DOUBLE_SIDED : CustomRenderTypes.ENTITY_TRIANGLES_DOUBLE_SIDED)
                         : (translucent ? CustomRenderTypes.ENTITY_TRIANGLES_TRANSLUCENT : CustomRenderTypes.ENTITY_TRIANGLES)).apply(
                         noTex ? DomainModelCache.defaultTexture() : matTex);
                 shader = translucent
-                        ? GameRenderer.getRendertypeEntityTranslucentShader()
-                        : GameRenderer.getRendertypeEntitySolidShader();
+                        ? GameRenderer::getRendertypeEntityTranslucentShader
+                        : GameRenderer::getRendertypeEntitySolidShader;
             }
 
             // 颜色/光照（每 run 常量，与 CPU 路径一致）
@@ -131,7 +137,7 @@ public final class StaticModelBuffer {
         return result;
     }
 
-    /** 每帧绘制：显式矩阵 + setupRenderState/clearRenderState 包住的状态 + 显式 shader */
+    /** 每帧绘制：显式矩阵 + setupRenderState/clearRenderState 包住的状态 + 每帧现取 shader */
     public void draw(PoseStack.Pose pose) {
         Matrix4f proj = RenderSystem.getProjectionMatrix();
         // 实体渲染两段式：pose.last().pose() 只含【实体变换】（相机相对平移 + yaw/scale），
@@ -139,10 +145,16 @@ public final class StaticModelBuffer {
         // 完整模型视图 = RenderSystem.getModelViewMatrix() × pose.pose()，与 CPU 路径逐顶点等效。
         Matrix4f mv = new Matrix4f(RenderSystem.getModelViewMatrix()).mul(pose.pose());
         for (Part p : parts) {
+            // 每帧现取 shader（Iris pipeline 重载后 getter 返回新程序，杜绝缓存实例失效）
+            ShaderInstance shader = p.shader.get();
+            if (shader == null) continue;
             p.renderType.setupRenderState();
-            RenderSystem.setupShaderLights(p.shader);
+            RenderSystem.setupShaderLights(shader);
             p.vbo.bind();
-            p.vbo.drawWithShader(mv, proj, p.shader);
+            // 用 RenderSystem.getShader() 解析（与 CPU 路径 setupRenderState→getShader 同一条链）：
+            // 主 pass = 该实体程序；Iris 阴影 pass 下由其重定向为 shadow 程序 → 绑定 shadow framebuffer 正确。
+            ShaderInstance active = RenderSystem.getShader();
+            p.vbo.drawWithShader(mv, proj, active != null ? active : shader);
             VertexBuffer.unbind();
             p.renderType.clearRenderState();
         }

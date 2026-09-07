@@ -6,6 +6,7 @@ import net.minecraft.client.Minecraft;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 
 /**
@@ -31,5 +32,20 @@ public class PolarisObjuilderClientEvents {
         float partial = event.getPartialTick().getGameTimeDeltaPartialTick(false);
         float t = (mc.level.getGameTime() + partial) / 20.0f;
         GlbAnimationManager.tick(t);
+    }
+
+    /**
+     * 客户端断开连接（退回标题界面/切换存档）时清空全部模型缓存：
+     * ① 静态 Map（PlacementModelLoader/DomainModelCache）跨世界存活，不清空会导致新世界的
+     *    摆放 pid 命中旧世界映射 → 直接复用旧模型几何（渲染错误模型且不触发重载）；
+     * ② Iris 在重进世界/维度切换时销毁重建 pipeline（全部 shader 程序与其 framebuffer），
+     *    旧缓存若持有旧 ShaderInstance 会变野引用（"Tried to use a destroyed GlResource" 崩溃）——
+     *    shader 已改为每帧现取，此处再逐 release 释放几何/纹理/GPU 缓冲兜底。
+     */
+    @SubscribeEvent
+    public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+        PlacementModelLoader.clearAll();
+        DomainModelCache.clearAll();
+        GlbAnimationManager.clear();
     }
 }

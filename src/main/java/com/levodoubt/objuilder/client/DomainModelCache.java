@@ -447,6 +447,33 @@ public class DomainModelCache {
     }
 
     /**
+     * 清空全部缓存（客户端断开连接/切换存档时调用）：
+     * ① 防【跨世界 placementId 碰撞】——静态 Map 跨世界存活，新世界 pid=#1 会命中旧世界映射
+     *    而直接复用旧模型几何（不触发重载，渲染出错误模型 + 旧缓冲）；
+     * ② 逐 release 顺带释放全部动态纹理与 GPU 常驻缓冲（ShaderInstance 已改为每帧现取，无失效引用）。
+     */
+    public static void clearAll() {
+        for (Integer id : GEOM.keySet().toArray(new Integer[0])) {
+            release(id);
+        }
+        // 兜底清掉空几何模型的残留条目（release 未覆盖的键）
+        RENDER_MESH.clear();
+        SHADOW_RENDER_MESH.clear();
+        STATIC_BUFFER.clear();
+        SHADOW_STATIC_BUFFER.clear();
+        GEOM.clear();
+        BOUNDS.clear();
+        BUCKETS.clear();
+        SHADOW_LOD.clear();
+        TEXTURES.clear();
+        COLORS.clear();
+        EMISSIVE.clear();
+        ALPHAS.clear();
+        DOUBLE_SIDED.clear();
+        MASKED.clear();
+    }
+
+    /**
      * 把三角形列表展平为紧凑渲染网格：按 materialId 分组（保持首见顺序，与旧渲染器 LinkedHashMap 一致）
      * → 连续写入位置/法线/UV 数组 → 预计算每 run 的打包颜色（ARGB）与光照。
      * 逐顶点逻辑与原 {@link DomainEntityRenderer} 渲染循环完全一致（含无贴图位置投影 UV、glb v 翻转、

@@ -74,6 +74,19 @@ public class PlacementModelLoader {
     }
 
     /**
+     * 清空全部映射（客户端断开连接/切换存档时调用）。
+     * 防【跨世界 placementId 碰撞】：本类与 DomainModelCache 均为静态 Map、跨世界存活，
+     * 若不清空，新世界的摆放 pid=#1 会命中旧世界映射而直接复用旧模型几何（不触发重载）。
+     * 几何/纹理/GPU 缓冲由 {@link DomainModelCache#clearAll()} 释放。
+     */
+    public static void clearAll() {
+        PID_TO_MODEL_ID.clear();
+        LOADING.clear();
+        FAILED.clear();
+        RELEASED.clear();
+    }
+
+    /**
      * 释放某摆放的全部缓存（B1 收尾·事项 1/4，网络包回调：服务端已删除该摆放）。
      * - 已加载 → 移除映射 + 释放 DomainModelCache 几何/纹理 + 注销 GlbAnimationManager 动画
      * - 加载中 → 标记 RELEASED，异步加载完成后在 finish() 丢弃刚烘焙的缓存
