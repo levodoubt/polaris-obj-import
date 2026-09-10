@@ -120,6 +120,21 @@ config/polarisobjuilder/models/
 
 ---
 
+## 参考项目
+
+本模组在实现过程中参考了以下开源项目：
+
+| 项目 | 借鉴内容 |
+|---|---|
+| [MCglTF](https://github.com/ModularMods/MCglTF) | glTF 动画系统（node TRS 刚体 / 骨骼 / morph targets 网格动画）、PBR 材质的顶点色处理思路 |
+| [MCObj](https://github.com/tom5454/MCObj) | OBJ / MTL 解析与导入流程 |
+
+**可选依赖**（见“安装”）：
+- **Iris / Oculus**：开启 PBR（法线/金属/粗糙）与光影支持
+- **polarisstorycore**：开启剧情 action 联动（`polarisobjuilder:anim`）
+
+---
+
 ## 许可
 
-[GNU General Public License v3.0](LICENSE)
+[MIT License](LICENSE)

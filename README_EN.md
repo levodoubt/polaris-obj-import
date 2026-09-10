@@ -119,6 +119,21 @@ Output: `build/libs/polarisobjuilder-0.2.0.jar`
 
 ---
 
+## References
+
+This mod references the following open-source projects during development:
+
+| Project | What was referenced |
+|---|---|
+| [MCglTF](https://github.com/ModularMods/MCglTF) | glTF animation system (node TRS rigid / skeletal / morph targets mesh animation), PBR material vertex-color handling |
+| [MCObj](https://github.com/tom5454/MCObj) | OBJ / MTL parsing and import flow |
+
+**Optional dependencies** (see *Installation*):
+- **Iris / Oculus**: enables PBR (normal/metallic/roughness) and shader support
+- **polarisstorycore**: enables story action hooks (`polarisobjuilder:anim`)
+
+---
+
 ## License
 
-[GNU General Public License v3.0](LICENSE)
+[MIT License](LICENSE)
