@@ -224,6 +224,32 @@ public class GlbModel {
         }
     }
 
+    /**
+     * 光源盒定义（子工程 9）：Blender 里 `light:` 前缀命名的 box。
+     * 摆放时在该区域填充 `minecraft:light`（等级 15）方块，移除摆放时清理 ——
+     * 用于"模型里的灯应该真的照亮周围"（模型本身只是视觉，不会发光）。
+     */
+    public static final class LightDef {
+        /** 去掉 `light:` 前缀后的名字 */
+        public final String name;
+        public final float minX, minY, minZ, maxX, maxY, maxZ;
+
+        public LightDef(String name, float minX, float minY, float minZ,
+                        float maxX, float maxY, float maxZ) {
+            this.name = name;
+            this.minX = minX; this.minY = minY; this.minZ = minZ;
+            this.maxX = maxX; this.maxY = maxY; this.maxZ = maxZ;
+        }
+    }
+
+    /** 光源盒前缀（子工程 9） */
+    public static final String PREFIX_LIGHT = "light:";
+
+    /** 是否为光源盒 node（`light:` 前缀） */
+    public static boolean isLightNode(String nodeName) {
+        return nodeName != null && nodeName.startsWith(PREFIX_LIGHT);
+    }
+
     public final String name;
     public final List<Node> nodes = new ArrayList<>();
     public final List<Mesh> meshes = new ArrayList<>();
@@ -233,10 +259,34 @@ public class GlbModel {
     public final List<Animation> animations = new ArrayList<>();
     /** 碰撞盒（子工程 6；空 = 无 col 盒的纯视觉模型） */
     public final List<ColliderDef> colliders = new ArrayList<>();
+    /** 光源盒（子工程 9；空 = 模型不含 `light:` 盒） */
+    public final List<LightDef> lights = new ArrayList<>();
     /** 每个 image 的原始字节（png/jpeg），null = 无（外部 uri 等，本子工程不支持） */
     public final List<byte[]> images = new ArrayList<>();
     /** texture 索引 → image 索引（-1 = 无 source） */
     public final List<Integer> textures = new ArrayList<>();
+
+    /**
+     * node 下标 → 是否"标记盒"（`col:` / `use:` / `light:`：不渲染、整棵子树跳过）。
+     * 懒构建缓存：{@link #walk} 在动画模型上**每帧**都会遍历全部 node，
+     * 逐帧做字符串解析（startsWith ×3 + indexOf ×2 + substring）在超大模型上不划算
+     * （子工程 8 复检优化，已覆盖子工程 9 的 `light:`）。
+     */
+    private boolean[] markerNodeFlags;
+
+    /** 该 node 是否为标记盒（缓存命中后为一次数组读） */
+    private boolean isMarkerNode(int nodeIdx) {
+        boolean[] flags = markerNodeFlags;
+        if (flags == null || flags.length != nodes.size()) {
+            flags = new boolean[nodes.size()];
+            for (int i = 0; i < nodes.size(); i++) {
+                String n = nodes.get(i).name;
+                flags[i] = ColliderName.parse(n) != null || isLightNode(n);
+            }
+            markerNodeFlags = flags; // 构建完再赋值（并发读安全：读到旧 null 只会重建一次）
+        }
+        return flags[nodeIdx];
+    }
 
     public GlbModel(String name) {
         this.name = name;
@@ -251,8 +301,10 @@ public class GlbModel {
      */
     public void computeColliders() {
         colliders.clear();
+        lights.clear();
         for (int root : sceneRoots) {
             collectColliderAabb(root, null);
+            collectLightAabb(root, null);
         }
         // 兜底：碰撞盒 node 不在 scene 树中（孤立节点）时按无父节点直接处理
         if (colliders.isEmpty()) {
@@ -263,10 +315,22 @@ public class GlbModel {
                 }
             }
         }
+        if (lights.isEmpty()) {
+            for (int i = 0; i < nodes.size(); i++) {
+                Node n = nodes.get(i);
+                if (isLightNode(n.name) && n.meshes.length > 0) {
+                    collectLightAabb(i, null);
+                }
+            }
+        }
         if (!colliders.isEmpty()) {
             PolarisObjuilder.LOGGER.info("[Glb] '{}' 解析到 {} 个碰撞盒: {}",
                     name, colliders.size(),
                     colliders.stream().map(GlbModel::describeCollider).toList());
+        }
+        if (!lights.isEmpty()) {
+            PolarisObjuilder.LOGGER.info("[Glb] '{}' 解析到 {} 个光源盒: {}",
+                    name, lights.size(), lights.stream().map(l -> l.name).toList());
         }
     }
 
@@ -289,31 +353,53 @@ public class GlbModel {
                 PolarisObjuilder.LOGGER.warn(
                         "[Glb] 碰撞盒名 '{}' 的 $ 位于 @ 之前（非法顺序）→ $ 段已忽略，按无命令处理", n.name);
             }
-            float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, minZ = Float.MAX_VALUE;
-            float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
-            for (int mi : n.meshes) {
-                Mesh mesh = meshes.get(mi);
-                for (Primitive p : mesh.primitives) {
-                    if (p.positions == null || p.positions.length < 9) continue;
-                    for (int v = 0; v < p.positions.length; v += 3) {
-                        float x = p.positions[v], y = p.positions[v + 1], z = p.positions[v + 2];
-                        float wx = world[0] * x + world[4] * y + world[8] * z + world[12];
-                        float wy = world[1] * x + world[5] * y + world[9] * z + world[13];
-                        float wz = world[2] * x + world[6] * y + world[10] * z + world[14];
-                        minX = Math.min(minX, wx); maxX = Math.max(maxX, wx);
-                        minY = Math.min(minY, wy); maxY = Math.max(maxY, wy);
-                        minZ = Math.min(minZ, wz); maxZ = Math.max(maxZ, wz);
-                    }
-                }
-            }
-            if (minX <= maxX) {
-                colliders.add(new ColliderDef(cn.partName(), minX, minY, minZ, maxX, maxY, maxZ,
+            float[] mm = nodeAabb(n, world);
+            if (mm != null) {
+                colliders.add(new ColliderDef(cn.partName(), mm[0], mm[1], mm[2], mm[3], mm[4], mm[5],
                         cn.animBinding(), cn.cmdKey(), cn.collides()));
             }
         }
         for (int c : n.children) {
             collectColliderAabb(c, world);
         }
+    }
+
+    /** DFS 收集 `light:` node 的 mesh 顶点 → 模型空间 AABB（子工程 9） */
+    private void collectLightAabb(int nodeIdx, float[] parent) {
+        Node n = nodes.get(nodeIdx);
+        float[] world = composeWorld(n, nodeIdx, parent, 1.0f, null);
+        if (isLightNode(n.name) && n.meshes.length > 0) {
+            float[] mm = nodeAabb(n, world);
+            if (mm != null) {
+                lights.add(new LightDef(n.name.substring(PREFIX_LIGHT.length()).trim(),
+                        mm[0], mm[1], mm[2], mm[3], mm[4], mm[5]));
+            }
+        }
+        for (int c : n.children) {
+            collectLightAabb(c, world);
+        }
+    }
+
+    /** 某 node 全部 mesh 顶点经 world 变换后的 AABB：{minX,minY,minZ,maxX,maxY,maxZ}；无有效顶点返回 null */
+    private float[] nodeAabb(Node n, float[] world) {
+        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, minZ = Float.MAX_VALUE;
+        float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+        for (int mi : n.meshes) {
+            Mesh mesh = meshes.get(mi);
+            for (Primitive p : mesh.primitives) {
+                if (p.positions == null || p.positions.length < 9) continue;
+                for (int v = 0; v < p.positions.length; v += 3) {
+                    float x = p.positions[v], y = p.positions[v + 1], z = p.positions[v + 2];
+                    float wx = world[0] * x + world[4] * y + world[8] * z + world[12];
+                    float wy = world[1] * x + world[5] * y + world[9] * z + world[13];
+                    float wz = world[2] * x + world[6] * y + world[10] * z + world[14];
+                    minX = Math.min(minX, wx); maxX = Math.max(maxX, wx);
+                    minY = Math.min(minY, wy); maxY = Math.max(maxY, wy);
+                    minZ = Math.min(minZ, wz); maxZ = Math.max(maxZ, wz);
+                }
+            }
+        }
+        return minX <= maxX ? new float[]{minX, minY, minZ, maxX, maxY, maxZ} : null;
     }
 
     // ===================== 展平（静态显示） =====================
@@ -450,7 +536,8 @@ public class GlbModel {
     private void walk(int nodeIdx, float[] parent, float scale,
                       com.levodoubt.objuilder.animation.GlbAnimationController anim, List<WorldPrim> out) {
         Node n = nodes.get(nodeIdx);
-        if (ColliderName.parse(n.name) != null) return; // 碰撞盒（col:/use:）不渲染
+        // 标记盒（col: / use: / light:）不渲染；走缓存判定（每帧调用，见 markerNodeFlags 注释）
+        if (isMarkerNode(nodeIdx)) return;
         float[] world = composeWorld(n, nodeIdx, parent, scale, anim);
         for (int mi : n.meshes) {
             if (mi < 0 || mi >= meshes.size()) continue;

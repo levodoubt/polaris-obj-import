@@ -87,7 +87,25 @@ public final class GlbInteraction {
                 ? new GlbAnimPayload(GlbAnimPayload.ACT_RESET, animName, (byte) 0, 0L, 1.0f, placementId)
                 : new GlbAnimPayload(GlbAnimPayload.ACT_PLAY, animName,
                         (byte) GlbAnimationController.PlayMode.ONCE.ordinal(), gameTime, 1.0f, placementId);
-        return setOpen(level, placementId, animName, !currentlyOpen, payload);
+        return setOpenExact(level, placementId, animName, !currentlyOpen, payload);
+    }
+
+    /**
+     * 回滚一次 toggle（子工程 8 标准 6 · 2.1.14 加固 A）：命令未生效时把某摆放某动画**还原为点击前的状态**。
+     * 不做取反，直接设成 {@code open}；已是目标状态则什么都不做（幂等、不重复广播）。
+     *
+     * <p>动机：右键 `col:x@A$C` 时动画先 toggle、命令后执行。若命令未生效而我们只回滚了消耗/碰撞，
+     * 就会出现"动画已播/状态=开，盒却还活着"的矛盾状态——玩家再点一下会变成 toggle RESET
+     * （表现为"枪掉下来又飞回去"）。因此回滚必须连动画状态一起还原。
+     */
+    public static void restoreOpen(ServerLevel level, int placementId, String animName, boolean open) {
+        if (animName == null) return;
+        if (isOpen(placementId, animName) == open) return; // 已是目标状态 → 幂等返回
+        GlbAnimPayload payload = open
+                ? new GlbAnimPayload(GlbAnimPayload.ACT_PLAY, animName,
+                        (byte) GlbAnimationController.PlayMode.ONCE.ordinal(), level.getGameTime(), 1.0f, placementId)
+                : new GlbAnimPayload(GlbAnimPayload.ACT_RESET, animName, (byte) 0, 0L, 1.0f, placementId);
+        setOpenExact(level, placementId, animName, open, payload);
     }
 
     /**
@@ -118,9 +136,9 @@ public final class GlbInteraction {
         return countBound(level, animName);
     }
 
-    /** 精确 setOpen（右键内部）：仅操作该摆放绑定的动态盒（多同名门独立开关） */
-    private static int setOpen(ServerLevel level, int placementId, String animName,
-                               boolean open, GlbAnimPayload payload) {
+    /** 精确 setOpen（右键 toggle / 回滚共用）：仅操作该摆放绑定的动态盒（多同名门独立开关） */
+    public static int setOpenExact(ServerLevel level, int placementId, String animName,
+                                   boolean open, GlbAnimPayload payload) {
         String k = key(placementId, animName);
         if (open) {
             OPEN_PARTS.add(k);

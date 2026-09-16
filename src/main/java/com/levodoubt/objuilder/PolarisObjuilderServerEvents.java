@@ -24,11 +24,15 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.coordinates.Vec3Argument;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LightBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -148,14 +152,23 @@ public class PolarisObjuilderServerEvents {
                     e.getUUID(), p.colliderUuids())); // 回填新实体 UUID
             restored++;
         }
-        // 碰撞体补齐：父实体存在但碰撞体缺失（旧存档无记录 / 已删除）→ 重新生成
+        // 碰撞体补齐 + 摆放 id 回填：父实体存在但碰撞体缺失（旧存档无记录 / 已删除）→ 重新生成；
+        // 已存在的碰撞体也按 SavedData 回填 placementId（子工程 8 复检修复：老存档的碰撞体没有该字段，
+        // 不补会让命令里的 %placement% 取到 -1、/objremove %placement% 失效）
         int restoredColliders = 0;
+        int backfilled = 0;
         for (Placement p : data.all()) {
             Entity parent = p.entityUuid() != null ? overworld.getEntity(p.entityUuid()) : null;
             if (parent == null) continue; // 父实体都还没恢复（理论上不会发生）
             List<UUID> alive = new ArrayList<>();
             for (UUID cu : p.colliderUuids()) {
-                if (cu != null && overworld.getEntity(cu) != null) alive.add(cu);
+                Entity ce = cu != null ? overworld.getEntity(cu) : null;
+                if (ce == null) continue;
+                alive.add(cu);
+                if (ce instanceof ColliderEntity collider && collider.getPlacementId() != p.id()) {
+                    collider.setPlacementId(p.id());
+                    backfilled++;
+                }
             }
             if (alive.size() == p.colliderUuids().size()) continue;
             List<UUID> spawned = spawnColliders(overworld, p);
@@ -165,9 +178,9 @@ public class PolarisObjuilderServerEvents {
                     p.entityUuid(), merged));
             restoredColliders += spawned.size();
         }
-        if (restored > 0 || restoredColliders > 0) {
-            PolarisObjuilder.LOGGER.info("[Objuilder] 已恢复 {} 个摆放模型、{} 个碰撞体（SavedData）",
-                    restored, restoredColliders);
+        if (restored > 0 || restoredColliders > 0 || backfilled > 0) {
+            PolarisObjuilder.LOGGER.info("[Objuilder] 已恢复 {} 个摆放模型、{} 个碰撞体（SavedData）；回填 {} 个碰撞体摆放 id",
+                    restored, restoredColliders, backfilled);
         }
     }
 
@@ -239,20 +252,23 @@ public class PolarisObjuilderServerEvents {
         e.setModelScale(scale);
         e.setPlacementId(id); // 摆放 id：客户端按它独立加载几何/动画（多同名门独立开关）
         level.addFreshEntity(e);
-        // 生成碰撞体（每个 col: 盒一个 ColliderEntity；动态盒若已在"开"状态则不生成）
-        List<UUID> colliderUuids = spawnColliders(level, new Placement(id, normalized,
-                pos.x(), pos.y(), pos.z(), yaw, scale, e.getUUID(), List.of()));
+        // 生成碰撞体（每个 col:/use: 盒一个 ColliderEntity；动态盒若已在"开"状态则不生成）
+        Placement placeRec = new Placement(id, normalized,
+                pos.x(), pos.y(), pos.z(), yaw, scale, e.getUUID(), List.of());
+        List<UUID> colliderUuids = spawnColliders(level, placeRec);
         data.put(new Placement(id, normalized, pos.x(), pos.y(), pos.z(), yaw, scale,
                 e.getUUID(), colliderUuids));
+        // 子工程 9：光源盒（light:）→ 在区域内填充光源方块
+        int lightCount = placeLights(level, placeRec);
         // 子工程 8：统计（挡人 col: / 仅交互 use: / 带命令 $），便于现场验证命名是否符合预期
         long blocking = colliders.stream().filter(c -> c.collides).count();
         long useOnly = colliders.size() - blocking;
         long withCmd = colliders.stream().filter(GlbModel.ColliderDef::hasCommand).count();
         source.sendSuccess(() -> Component.literal(String.format(
                 "§a[Objuilder] 已摆放 #%d %s @ %.1f %.1f %.1f yaw=%.1f scale=%.2f"
-                        + "（碰撞盒 %d 个：挡人 %d / 仅交互 %d / 带命令 %d）",
+                        + "（碰撞盒 %d 个：挡人 %d / 仅交互 %d / 带命令 %d；光源方块 %d 个）",
                 id, normalized, pos.x(), pos.y(), pos.z(), yaw, scale,
-                colliders.size(), blocking, useOnly, withCmd)), true);
+                colliders.size(), blocking, useOnly, withCmd, lightCount)), true);
         return 1;
     }
 
@@ -439,12 +455,14 @@ public class PolarisObjuilderServerEvents {
      * x' = x·cosθ + z·sinθ, z' = -x·sinθ + z·cosθ），保证碰撞与视觉对齐。
      * yaw 已限 90° 倍数，变换后仍是轴对齐盒。
      */
-    private static AABB worldBox(GlbModel.ColliderDef c, Vec3 pos, float yaw, float scale) {
+    private static AABB worldBox(float minXIn, float minYIn, float minZIn,
+                                 float maxXIn, float maxYIn, float maxZIn,
+                                 Vec3 pos, float yaw, float scale) {
         double rad = Math.toRadians(yaw);
         double cos = Math.cos(rad), sin = Math.sin(rad);
         double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE, minZ = Double.MAX_VALUE;
         double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
-        double[] xs = {c.minX, c.maxX}, ys = {c.minY, c.maxY}, zs = {c.minZ, c.maxZ};
+        double[] xs = {minXIn, maxXIn}, ys = {minYIn, maxYIn}, zs = {minZIn, maxZIn};
         for (double x : xs) {
             for (double y : ys) {
                 for (double z : zs) {
@@ -478,11 +496,95 @@ public class PolarisObjuilderServerEvents {
             if (c.isDynamic() && GlbInteraction.isOpen(p.id(), c.animBinding)) continue;
             ColliderEntity ce = new ColliderEntity(PolarisObjuilder.COLLIDER_ENTITY.get(), level);
             ce.setPlacementId(p.id());
-            ce.setBox(worldBox(c, pos, p.yaw(), p.scale()), c.name, c.animBinding, c.cmdKey, c.collides);
+            ce.setBox(worldBox(c.minX, c.minY, c.minZ, c.maxX, c.maxY, c.maxZ, pos, p.yaw(), p.scale()),
+                    c.name, c.animBinding, c.cmdKey, c.collides);
             level.addFreshEntity(ce);
             uuids.add(ce.getUUID());
         }
         return uuids;
+    }
+
+    // ===================== 光源盒（子工程 9）：`light:` 前缀 → 世界内填充光源方块 =====================
+
+    /** 光源方块等级（`light:` 盒填充用）：15 = 满亮 */
+    private static final int LIGHT_BLOCK_LEVEL = 15;
+
+    /** 解析 `light:` 光源盒（与碰撞盒同一份模型解析；失败返回空表） */
+    private static List<GlbModel.LightDef> parseLights(String ref) {
+        File f = modelsDir().resolve(ref).toFile();
+        if (!f.exists() || !f.getName().toLowerCase().endsWith(".glb")) return List.of();
+        try {
+            return GlbParser.parse(f).lights;
+        } catch (Exception e) {
+            PolarisObjuilder.LOGGER.warn("[Objuilder] 解析光源盒失败: {} ({})", ref, e.toString());
+            return List.of();
+        }
+    }
+
+    /** 摆放/恢复时：在 light: 盒区域内填充光源方块（只填空气，不覆盖已有方块）；返回放置数量 */
+    private static int placeLights(ServerLevel level, Placement p) {
+        List<GlbModel.LightDef> lights = parseLights(p.ref());
+        if (lights.isEmpty()) return 0;
+        Vec3 pos = new Vec3(p.x(), p.y(), p.z());
+        int placed = 0;
+        for (GlbModel.LightDef l : lights) {
+            AABB box = worldBox(l.minX, l.minY, l.minZ, l.maxX, l.maxY, l.maxZ, pos, p.yaw(), p.scale());
+            placed += fillLightBox(level, box);
+        }
+        return placed;
+    }
+
+    /** 移除摆放时：清理该摆放 light: 盒区域内的光源方块（只清 minecraft:light，不动玩家建筑） */
+    private static int clearLights(ServerLevel level, Placement p) {
+        List<GlbModel.LightDef> lights = parseLights(p.ref());
+        if (lights.isEmpty()) return 0;
+        Vec3 pos = new Vec3(p.x(), p.y(), p.z());
+        int cleared = 0;
+        for (GlbModel.LightDef l : lights) {
+            AABB box = worldBox(l.minX, l.minY, l.minZ, l.maxX, l.maxY, l.maxZ, pos, p.yaw(), p.scale());
+            cleared += clearLightBox(level, box);
+        }
+        return cleared;
+    }
+
+    /** 摆放记录不带维度；恢复/清理约定用主世界，另加命令所在维度（两者相同则去重） */
+    private static List<ServerLevel> lightLevels(CommandSourceStack source) {
+        ServerLevel lv = source.getLevel();
+        ServerLevel ow = source.getServer().overworld();
+        return lv == ow ? List.of(lv) : List.of(lv, ow);
+    }
+
+    /** 填充一个世界 AABB 内的光源方块（上限 512 格防呆；只填空气） */
+    private static int fillLightBox(ServerLevel level, AABB box) {
+        int placed = 0;
+        for (BlockPos bp : BlockPos.betweenClosed(
+                BlockPos.containing(box.minX, box.minY, box.minZ),
+                BlockPos.containing(box.maxX - 1.0E-4, box.maxY - 1.0E-4, box.maxZ - 1.0E-4))) {
+            if (placed >= 512) {
+                PolarisObjuilder.LOGGER.warn("[Objuilder] light: 盒超过 512 格，已截断");
+                break;
+            }
+            BlockState st = level.getBlockState(bp);
+            if (st.is(Blocks.LIGHT) || !st.isAir()) continue;
+            level.setBlock(bp, Blocks.LIGHT.defaultBlockState()
+                    .setValue(LightBlock.LEVEL, LIGHT_BLOCK_LEVEL), 3);
+            placed++;
+        }
+        return placed;
+    }
+
+    /** 清理一个世界 AABB 内的光源方块（只清 minecraft:light） */
+    private static int clearLightBox(ServerLevel level, AABB box) {
+        int cleared = 0;
+        for (BlockPos bp : BlockPos.betweenClosed(
+                BlockPos.containing(box.minX, box.minY, box.minZ),
+                BlockPos.containing(box.maxX - 1.0E-4, box.maxY - 1.0E-4, box.maxZ - 1.0E-4))) {
+            if (level.getBlockState(bp).is(Blocks.LIGHT)) {
+                level.setBlock(bp, Blocks.AIR.defaultBlockState(), 3);
+                cleared++;
+            }
+        }
+        return cleared;
     }
 
     /** config/polarisobjuilder 目录 */

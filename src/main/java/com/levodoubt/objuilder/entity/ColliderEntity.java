@@ -295,12 +295,16 @@ public class ColliderEntity extends Entity {
     }
 
     /**
-     * 拾取半径（子工程 7）：门板等宽盒随 AABB 尺寸自适应（上限 4 格），
-     * 准星指门洞附近也能命中，便于右键开关门（getPickRadius 默认 0 = 仅盒面命中）。
+     * 拾取半径（子工程 7；子工程 9 收窄）：只做**小幅**膨胀。
+     *
+     * <p>原实现 `min(4, size*0.5+0.25)` 对大盒（如 1.83×0.26×0.32 的枪盒）会产生 ~1.2 格的膨胀体积，
+     * 足以把旁边 2cm 的子弹盒整个吞掉 → 点子弹却命中枪盒（表现为"点子弹触发枪的动画"）。
+     * 现改为上限 0.3 且随尺寸缓增：薄门板仍好点，大盒不再跨部件误命中。
+     * 需要更大点击范围时应在模型里把标记盒画大（不可见标记盒不影响观感）。
      */
     @Override
     public float getPickRadius() {
-        return (float) Math.min(4.0, this.box.getSize() * 0.5 + 0.25);
+        return (float) Math.min(0.3, 0.1 + this.box.getSize() * 0.05);
     }
 
     /**
@@ -336,14 +340,16 @@ public class ColliderEntity extends Entity {
         }
         ServerLevel serverLevel = (ServerLevel) this.level();
         if (cmd != null && !CommandTable.has(cmd)) {
-            // 键不存在：不消耗、不静默（否则现场极难排查"点了没反应"）
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 命令键 '{}' 不存在（部件 '{}'，摆放 #{}）",
+            // 键不存在：不消耗、不静默（否则现场极难排查"点了没反应"）；此处早于动画/状态，故无任何副作用
+            PolarisObjuilder.LOGGER.warn("[Objuilder] 命令键 '{}' 不存在（部件 '{}'，摆放 #{}）→ 未消耗、未改状态",
                     cmd, getPartName(), getPlacementId());
-            player.displayClientMessage(
-                    Component.literal("§c[Objuilder] 命令键未配置: " + cmd), true);
+            String part = getPartName();
+            player.displayClientMessage(Component.literal(
+                    "§c[Objuilder] 命令键未配置: " + cmd + (part == null ? "" : "（部件 " + part + "）")), true);
             return InteractionResult.SUCCESS;
         }
-        // 1) 动画（复用子工程 7 机制）
+        // 1) 动画（复用子工程 7 机制）；先记录点击前状态，供命令未生效时回滚（标准 6 / 2.1.14 加固 A）
+        boolean animWasOpen = anim != null && GlbInteraction.isOpen(getPlacementId(), anim);
         if (anim != null) {
             GlbInteraction.toggle(serverLevel, getPlacementId(), anim);
         }
@@ -357,11 +363,24 @@ public class ColliderEntity extends Entity {
         // 3) 命令（服务端、以玩家身份、带占位符）
         if (cmd != null) {
             int result = CommandTable.run(serverPlayer, cmd, getPartName(), getPlacementId(), this.box.getCenter());
-            if (consume && CommandTable.mode(cmd) == CommandTable.Consume.RESULT && result <= 0) {
-                // 命令未生效（如 execute if 条件不成立）→ 回滚消耗，稍后可重试
-                setPickEnabled(true);
-                setActive(true);
-                GlbInteraction.unmarkConsumed(getPlacementId(), getPartName());
+            // "未生效"判据：consume="result" 且返回值 <= 0（含 cmds 多命令"任一条失败即中止"返回 0）
+            boolean ineffective = CommandTable.mode(cmd) == CommandTable.Consume.RESULT && result <= 0;
+            if (ineffective) {
+                // 加固 B：失败必须给玩家可见反馈（否则现场只能翻日志）
+                String why = getPartName() == null ? cmd : cmd + "（部件 " + getPartName() + "）";
+                player.displayClientMessage(Component.literal(
+                        "§c[Objuilder] 命令未生效，本次交互已忽略：" + why), true);
+                if (consume) {
+                    // 加固 A：连动画 toggle 一起回滚到点击前状态（否则"动画已播/状态=开 但盒还活着"，
+                    // 玩家再点一下会变成 toggle RESET —— 实测表现为"枪掉下来又飞回去"）
+                    if (anim != null) {
+                        GlbInteraction.restoreOpen(serverLevel, getPlacementId(), anim, animWasOpen);
+                    }
+                    // active 跟随"点击前的动画状态"：静态盒（anim==null）恢复阻挡；动态盒按 animWasOpen 定
+                    setActive(!(anim != null && animWasOpen));
+                    setPickEnabled(true);
+                    GlbInteraction.unmarkConsumed(getPlacementId(), getPartName());
+                }
             }
         }
         return InteractionResult.SUCCESS;
@@ -393,6 +412,9 @@ public class ColliderEntity extends Entity {
         this.entityData.set(DATA_CMD_KEY, tag.getString("cmdKey"));
         // 旧存档（子工程 6/7）没有 collides → 默认 true（保持原"col: 挡人"行为）
         this.entityData.set(DATA_COLLIDES, !tag.contains("collides") || tag.getBoolean("collides"));
+        // 摆放 id（子工程 8 复检修复）：原先不持久化 → 重进存档后为 -1，命令里 %placement% 取到 -1、
+        // /objremove %placement% 失效。此处持久化；老存档无该字段时由 onServerStarted 按 SavedData 回填。
+        this.placementId = tag.contains("placementId") ? tag.getInt("placementId") : -1;
         // active / pickEnabled 不持久化：重启强制恢复"阻挡 + 可点"——与 OPEN_PARTS / CONSUMED 内存态清零
         // （门默认关闭、命令盒恢复可点）一致，保证重启后碰撞状态与动画初始姿势（门关）对齐
         this.entityData.set(DATA_ACTIVE, true);
@@ -412,6 +434,7 @@ public class ColliderEntity extends Entity {
         tag.putString("partName", getPartName() == null ? "" : getPartName());
         tag.putString("cmdKey", getCmdKey() == null ? "" : getCmdKey());
         tag.putBoolean("collides", collides());
+        tag.putInt("placementId", placementId);
     }
 
     @Override
