@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.UUID;
 
 import com.levodoubt.objuilder.animation.GlbAnimationController;
+import com.levodoubt.objuilder.command.CommandTable;
 import com.levodoubt.objuilder.core.GlbModel;
 import com.levodoubt.objuilder.core.GlbParser;
 import com.levodoubt.objuilder.entity.ColliderEntity;
@@ -18,6 +19,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -25,6 +27,7 @@ import net.minecraft.commands.arguments.coordinates.Vec3Argument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -47,6 +50,10 @@ import net.neoforged.neoforge.network.PacketDistributor;
  *   /objremove <id>                         —— 移除指定摆放（删实体 + 删 SavedData 记录）
  *   /objclear                               —— 清空全部摆放
  *   摆放清单存服务端 SavedData（overworld），重进游戏自动恢复。
+ *
+ * 命令映射表（子工程 8）：
+ *   /objcmd reload | list | test &lt;键&gt;      —— commands.json 热重载 / 列出键 / 调试执行
+ *   文件：config/polarisobjuilder/commands.json（模型里的 `$键` 在这里映射成真实命令）
  */
 @EventBusSubscriber(modid = PolarisObjuilder.MODID, bus = EventBusSubscriber.Bus.GAME)
 public class PolarisObjuilderServerEvents {
@@ -102,12 +109,24 @@ public class PolarisObjuilderServerEvents {
         // /objclear
         dispatcher.register(Commands.literal("objclear")
                 .executes(ctx -> objclear(ctx.getSource())));
+        // /objcmd（子工程 8）：命令映射表热重载 / 列表 / 调试执行
+        dispatcher.register(Commands.literal("objcmd")
+                .then(Commands.literal("reload")
+                        .executes(ctx -> objcmdReload(ctx.getSource())))
+                .then(Commands.literal("list")
+                        .executes(ctx -> objcmdList(ctx.getSource())))
+                .then(Commands.literal("test")
+                        .then(Commands.argument("key", StringArgumentType.word())
+                                .executes(ctx -> objcmdTest(ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "key"))))));
     }
 
-    /** 服务端启动完成：按 SavedData 记录重新 spawn 摆放实体 + 碰撞体（持久化恢复，重进游戏模型自动出现） */
+    /** 服务端启动完成：加载命令映射表 + 按 SavedData 记录重新 spawn 摆放实体 + 碰撞体（持久化恢复，重进游戏模型自动出现） */
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event) {
         MinecraftServer server = event.getServer();
+        // 子工程 8：命令映射表（commands.json）——$ 命令键的键值对在这里进内存
+        CommandTable.load(server);
         ServerLevel overworld = server.overworld();
         PlacementSavedData data = PlacementSavedData.get(overworld);
         int restored = 0;
@@ -225,9 +244,15 @@ public class PolarisObjuilderServerEvents {
                 pos.x(), pos.y(), pos.z(), yaw, scale, e.getUUID(), List.of()));
         data.put(new Placement(id, normalized, pos.x(), pos.y(), pos.z(), yaw, scale,
                 e.getUUID(), colliderUuids));
+        // 子工程 8：统计（挡人 col: / 仅交互 use: / 带命令 $），便于现场验证命名是否符合预期
+        long blocking = colliders.stream().filter(c -> c.collides).count();
+        long useOnly = colliders.size() - blocking;
+        long withCmd = colliders.stream().filter(GlbModel.ColliderDef::hasCommand).count();
         source.sendSuccess(() -> Component.literal(String.format(
-                "§a[Objuilder] 已摆放 #%d %s @ %.1f %.1f %.1f yaw=%.1f scale=%.2f（碰撞盒 %d 个）",
-                id, normalized, pos.x(), pos.y(), pos.z(), yaw, scale, colliders.size())), true);
+                "§a[Objuilder] 已摆放 #%d %s @ %.1f %.1f %.1f yaw=%.1f scale=%.2f"
+                        + "（碰撞盒 %d 个：挡人 %d / 仅交互 %d / 带命令 %d）",
+                id, normalized, pos.x(), pos.y(), pos.z(), yaw, scale,
+                colliders.size(), blocking, useOnly, withCmd)), true);
         return 1;
     }
 
@@ -293,9 +318,59 @@ public class PolarisObjuilderServerEvents {
         return 1;
     }
 
+    // ===================== objcmd（子工程 8）：命令映射表 =====================
+
+    /** /objcmd reload：重新读取 commands.json（失败保留旧表并提示） */
+    private static int objcmdReload(CommandSourceStack source) {
+        CommandTable.LoadResult result = CommandTable.load(source.getServer());
+        if (result.ok()) {
+            source.sendSuccess(() -> Component.literal("§a[Objuilder] " + result.message()
+                    + "\n§7文件：" + CommandTable.file()), true);
+            return 1;
+        }
+        source.sendFailure(Component.literal("§c[Objuilder] " + result.message()));
+        return 0;
+    }
+
+    /** /objcmd list：列出所有命令键 */
+    private static int objcmdList(CommandSourceStack source) {
+        List<String> keys = CommandTable.keys();
+        if (keys.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("§7[Objuilder] 命令表为空（" + CommandTable.file() + "）"), false);
+            return 1;
+        }
+        source.sendSuccess(() -> Component.literal(
+                String.format("§7[Objuilder] 命令表 %d 个键（%s）：", keys.size(), CommandTable.file())), false);
+        for (String key : keys) {
+            CommandTable.Entry e = CommandTable.get(key);
+            String cmd = e == null ? "" : e.cmd();
+            if (cmd.length() > 70) cmd = cmd.substring(0, 70) + "…";
+            String flags = e == null ? "" : String.format(" §8[perm=%d consume=%s%s]",
+                    e.perm(), e.consume().name().toLowerCase(java.util.Locale.ROOT),
+                    e.feedback() ? " feedback" : "");
+            String line = "  §f" + key + " §7→ §a" + cmd + flags;
+            source.sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    /** /objcmd test &lt;键&gt;：以自己为对象执行一次（调试用，不消耗、不改任何部件状态） */
+    private static int objcmdTest(CommandSourceStack source, String key) throws CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        if (!CommandTable.has(key)) {
+            source.sendFailure(Component.literal("§c[Objuilder] 命令键不存在: " + key
+                    + "（可用 /objcmd list 查看）"));
+            return 0;
+        }
+        int result = CommandTable.run(player, key, "test", -1, player.position());
+        source.sendSuccess(() -> Component.literal(String.format(
+                "§a[Objuilder] 测试命令键 '%s' → 返回值 %d（未消耗任何部件）", key, result)), false);
+        return result > 0 ? 1 : 0;
+    }
+
     /**
      * 引用归一化：
-     * - 绝对路径且在 models/ 下 → 归一为 models/<相对> 引用
+     * - 绝对路径且在 models/ 下 → 归一为 models/&lt;相对&gt; 引用
      * - 相对路径 → 补 models/ 前缀（已是则原样）
      * - 绝对路径不在 models/ 下 → null（warn 拒绝，要求先拷贝进 models/）
      */
@@ -382,8 +457,9 @@ public class PolarisObjuilderServerEvents {
     }
 
     /**
-     * 为摆放生成碰撞体：每个 col: 盒 → 一个 ColliderEntity（世界 AABB）。
+     * 为摆放生成碰撞体：每个碰撞盒（`col:` / `use:`）→ 一个 ColliderEntity（世界 AABB）。
      * 动态盒（@Anim 绑定）若已在 OPEN_PARTS（该摆放该动画已开）→ 跳过（不阻挡，状态由 GlbInteraction 维护）。
+     * 子工程 8：`use:` 盒照常生成（要能右键），但 collides=false → 恒不挡人。
      * 返回生成的碰撞体 UUID 列表。
      */
     private static List<UUID> spawnColliders(ServerLevel level, Placement p) {
@@ -396,7 +472,7 @@ public class PolarisObjuilderServerEvents {
             if (c.isDynamic() && GlbInteraction.isOpen(p.id(), c.animBinding)) continue;
             ColliderEntity ce = new ColliderEntity(PolarisObjuilder.COLLIDER_ENTITY.get(), level);
             ce.setPlacementId(p.id());
-            ce.setBox(worldBox(c, pos, p.yaw(), p.scale()), c.animBinding);
+            ce.setBox(worldBox(c, pos, p.yaw(), p.scale()), c.name, c.animBinding, c.cmdKey, c.collides);
             level.addFreshEntity(ce);
             uuids.add(ce.getUUID());
         }

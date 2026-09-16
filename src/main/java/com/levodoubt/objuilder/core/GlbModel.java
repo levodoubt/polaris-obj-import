@@ -181,27 +181,46 @@ public class GlbModel {
     }
 
     /**
-     * 碰撞盒定义（子工程 6）：Blender 里 `col:` 前缀命名的 box 物体。
+     * 碰撞盒定义（子工程 6 + 8）：Blender 里 `col:` / `use:` 前缀命名的 box 物体。
      * - localAabb = 模型空间 AABB（已应用 node 自身 + 父链变换，未乘摆放 scale/yaw/pos）
      * - animBinding = `col:xxx@AnimName` 中的动画名（动态盒），null = 静态盒始终阻挡
+     * - cmdKey = `col:xxx$Key` 中的命令映射键（子工程 8），null = 无命令
+     * - collides = `col:` → true（挡人）；`use:` → false（不挡人，仅交互）
      */
     public static final class ColliderDef {
-        /** 去掉 col: 前缀后的名字（如 wall / gate_door） */
+        /** 去掉前缀后的部件名（如 wall / gate_door） */
         public final String name;
         public final float minX, minY, minZ, maxX, maxY, maxZ;
         /** 绑定的动画名（@ 后缀），null = 静态碰撞盒 */
         public final String animBinding;
+        /** 命令映射键（$ 后缀，子工程 8），null = 不触发命令 */
+        public final String cmdKey;
+        /** 是否参与实体碰撞（`use:` → false，玩家可穿过） */
+        public final boolean collides;
 
         public ColliderDef(String name, float minX, float minY, float minZ,
-                           float maxX, float maxY, float maxZ, String animBinding) {
+                           float maxX, float maxY, float maxZ,
+                           String animBinding, String cmdKey, boolean collides) {
             this.name = name;
             this.minX = minX; this.minY = minY; this.minZ = minZ;
             this.maxX = maxX; this.maxY = maxY; this.maxZ = maxZ;
             this.animBinding = animBinding;
+            this.cmdKey = cmdKey;
+            this.collides = collides;
         }
 
         public boolean isDynamic() {
             return animBinding != null && !animBinding.isEmpty();
+        }
+
+        /** 是否绑定了命令键（子工程 8） */
+        public boolean hasCommand() {
+            return cmdKey != null && !cmdKey.isEmpty();
+        }
+
+        /** 是否可被右键（有动画或命令键） */
+        public boolean interactive() {
+            return isDynamic() || hasCommand();
         }
     }
 
@@ -226,20 +245,20 @@ public class GlbModel {
     // ===================== 碰撞盒（子工程 6） =====================
 
     /**
-     * 解析 `col:` 前缀 node → 模型空间 AABB 列表（colliders）。
+     * 解析碰撞盒 node（`col:` / `use:` 前缀）→ 模型空间 AABB 列表（colliders）。
      * 顶点应用 node 自身 + 父链的初始变换（anim=null 初始姿势），scale=1（摆放 scale/yaw 由服务端另行应用）。
-     * 渲染（flatten）会跳过 col: node，此处只供服务端 objplace/恢复生成碰撞体。
+     * 渲染（flatten）会跳过这些 node，此处只供服务端 objplace/恢复生成碰撞体。
      */
     public void computeColliders() {
         colliders.clear();
         for (int root : sceneRoots) {
             collectColliderAabb(root, null);
         }
-        // 兜底：col node 不在 scene 树中（孤立节点）时按无父节点直接处理
+        // 兜底：碰撞盒 node 不在 scene 树中（孤立节点）时按无父节点直接处理
         if (colliders.isEmpty()) {
             for (int i = 0; i < nodes.size(); i++) {
                 Node n = nodes.get(i);
-                if (n.name != null && n.name.startsWith("col:") && n.meshes.length > 0) {
+                if (ColliderName.parse(n.name) != null && n.meshes.length > 0) {
                     collectColliderAabb(i, null);
                 }
             }
@@ -247,15 +266,29 @@ public class GlbModel {
         if (!colliders.isEmpty()) {
             PolarisObjuilder.LOGGER.info("[Glb] '{}' 解析到 {} 个碰撞盒: {}",
                     name, colliders.size(),
-                    colliders.stream().map(c -> c.name + (c.isDynamic() ? "@" + c.animBinding : "")).toList());
+                    colliders.stream().map(GlbModel::describeCollider).toList());
         }
     }
 
-    /** DFS 收集 col: node 的 mesh 顶点 → 模型空间 AABB（应用父链变换） */
+    /** 碰撞盒日志描述（子工程 8：区分 col/use、动画、命令键） */
+    private static String describeCollider(ColliderDef c) {
+        StringBuilder sb = new StringBuilder(c.name);
+        if (c.isDynamic()) sb.append('@').append(c.animBinding);
+        if (c.hasCommand()) sb.append('$').append(c.cmdKey);
+        sb.append(c.collides ? " (col)" : " (use/无碰撞)");
+        return sb.toString();
+    }
+
+    /** DFS 收集碰撞盒 node 的 mesh 顶点 → 模型空间 AABB（应用父链变换） */
     private void collectColliderAabb(int nodeIdx, float[] parent) {
         Node n = nodes.get(nodeIdx);
         float[] world = composeWorld(n, nodeIdx, parent, 1.0f, null);
-        if (n.name != null && n.name.startsWith("col:") && n.meshes.length > 0) {
+        ColliderName cn = n.meshes.length > 0 ? ColliderName.parse(n.name) : null;
+        if (cn != null) {
+            if (cn.invalidOrder()) {
+                PolarisObjuilder.LOGGER.warn(
+                        "[Glb] 碰撞盒名 '{}' 的 $ 位于 @ 之前（非法顺序）→ $ 段已忽略，按无命令处理", n.name);
+            }
             float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, minZ = Float.MAX_VALUE;
             float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
             for (int mi : n.meshes) {
@@ -274,14 +307,8 @@ public class GlbModel {
                 }
             }
             if (minX <= maxX) {
-                String rest = n.name.substring(4); // 去掉 "col:"
-                String animBinding = null;
-                int at = rest.indexOf('@');
-                if (at >= 0) {
-                    animBinding = rest.substring(at + 1);
-                    rest = rest.substring(0, at);
-                }
-                colliders.add(new ColliderDef(rest.trim(), minX, minY, minZ, maxX, maxY, maxZ, animBinding));
+                colliders.add(new ColliderDef(cn.partName(), minX, minY, minZ, maxX, maxY, maxZ,
+                        cn.animBinding(), cn.cmdKey(), cn.collides()));
             }
         }
         for (int c : n.children) {
@@ -416,11 +443,14 @@ public class GlbModel {
         }
     }
 
-    /** DFS 遍历 node 树，把每个 mesh primitive 变换到世界坐标（col: 碰撞盒 node 不参与渲染，整棵子树跳过） */
+    /**
+     * DFS 遍历 node 树，把每个 mesh primitive 变换到世界坐标（`col:` / `use:` 碰撞盒 node 不参与渲染，整棵子树跳过）。
+     * ⚠️ 子工程 8：`use:` 必须与 `col:` 一样在这里跳过，否则 use: 盒会以原始 box 网格渲染成一个方块出现在世界里。
+     */
     private void walk(int nodeIdx, float[] parent, float scale,
                       com.levodoubt.objuilder.animation.GlbAnimationController anim, List<WorldPrim> out) {
         Node n = nodes.get(nodeIdx);
-        if (n.name != null && n.name.startsWith("col:")) return; // 碰撞盒不渲染
+        if (ColliderName.parse(n.name) != null) return; // 碰撞盒（col:/use:）不渲染
         float[] world = composeWorld(n, nodeIdx, parent, scale, anim);
         for (int mi : n.meshes) {
             if (mi < 0 || mi >= meshes.size()) continue;

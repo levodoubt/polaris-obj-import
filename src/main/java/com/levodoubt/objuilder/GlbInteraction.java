@@ -33,6 +33,16 @@ public final class GlbInteraction {
     /** 服务端「部件开状态」：处于"开"的 (摆放id:动画名) key 集合（内存态；重进游戏重置为关=门默认关闭） */
     private static final Set<String> OPEN_PARTS = new HashSet<>();
 
+    /**
+     * 服务端「已消耗部件」（子工程 8）：key = "摆放id:部件名"。
+     * `$命令键` 盒执行"成功"后进此集合（不可点 + 不挡人），用于防止 `/glbanim reset` 之类
+     * 全局动画操作把它重新"复活"成挡人实体。
+     *
+     * <p>⚠️ 会话级内存态（与 OPEN_PARTS 一致）：重启后清零 → 已消耗盒恢复可点，
+     * 玩家已拿到的物品不会回收 → 可重复刷物品。解法是命令侧自带守卫（计分板/剧情 flag），见 `doc/2.1.13` §6.8。
+     */
+    private static final Set<String> CONSUMED = new HashSet<>();
+
     /** key 编码：摆放 id + 动画名（动画名一般不含冒号） */
     private static String key(int placementId, String animName) {
         return placementId + ":" + animName;
@@ -41,6 +51,27 @@ public final class GlbInteraction {
     /** 精确查询：某摆放的某动画是否处于打开状态 */
     public static boolean isOpen(int placementId, String animName) {
         return OPEN_PARTS.contains(key(placementId, animName));
+    }
+
+    // ===================== 已消耗部件（子工程 8） =====================
+
+    /** 标记某摆放的某部件已消耗（命令盒执行成功后调用） */
+    public static void markConsumed(int placementId, String partName) {
+        if (partName != null && !partName.isEmpty()) {
+            CONSUMED.add(key(placementId, partName));
+        }
+    }
+
+    /** 回滚消耗标记（consume="result" 且命令未生效时调用） */
+    public static void unmarkConsumed(int placementId, String partName) {
+        if (partName != null && !partName.isEmpty()) {
+            CONSUMED.remove(key(placementId, partName));
+        }
+    }
+
+    /** 某摆放的某部件是否已消耗 */
+    public static boolean isConsumed(int placementId, String partName) {
+        return partName != null && !partName.isEmpty() && CONSUMED.contains(key(placementId, partName));
     }
 
     /**
@@ -77,6 +108,8 @@ public final class GlbInteraction {
             OPEN_PARTS.removeIf(k -> k.endsWith(":" + animName));
             for (Entity e : level.getAllEntities()) {
                 if (e instanceof ColliderEntity ce && animName.equals(ce.getAnimBinding())) {
+                    // 子工程 8：已消耗的部件不复活（否则 /glbanim reset 会把"已拿走"的盒重新变成挡人实体）
+                    if (isConsumed(ce.getPlacementId(), ce.getPartName())) continue;
                     ce.setActive(true);
                 }
             }
@@ -99,7 +132,12 @@ public final class GlbInteraction {
         for (Entity e : level.getAllEntities()) {
             if (e instanceof ColliderEntity ce && placementId == ce.getPlacementId()
                     && animName.equals(ce.getAnimBinding())) {
-                ce.setActive(!open); // 开门 → 碰撞解除（active=false 可穿过）；关门 → 碰撞恢复（active=true 阻挡）
+                // 关门 → 碰撞恢复（active=true 阻挡）；已消耗的部件不复活（子工程 8）
+                if (!open && isConsumed(ce.getPlacementId(), ce.getPartName())) {
+                    count++;
+                    continue;
+                }
+                ce.setActive(!open); // 开门 → 碰撞解除（active=false 可穿过）
                 count++;
             }
         }

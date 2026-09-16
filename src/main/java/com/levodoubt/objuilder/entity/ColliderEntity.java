@@ -1,8 +1,11 @@
 package com.levodoubt.objuilder.entity;
 
 import com.levodoubt.objuilder.GlbInteraction;
+import com.levodoubt.objuilder.PolarisObjuilder;
+import com.levodoubt.objuilder.command.CommandTable;
 
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
@@ -11,6 +14,7 @@ import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerEntity;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
@@ -21,21 +25,23 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * 隐形碰撞体实体（子工程 6 + 7）——用 MC 引擎原生单 AABB 碰撞拼出多 AABB 碰撞：
- * - 每个 `col:` 盒 → 一个 ColliderEntity，AABB = 该盒经 yaw/scale/平移后的世界盒
+ * 隐形碰撞体实体（子工程 6 + 7 + 8）——用 MC 引擎原生单 AABB 碰撞拼出多 AABB 碰撞：
+ * - 每个 `col:` / `use:` 盒 → 一个 ColliderEntity，AABB = 该盒经 yaw/scale/平移后的世界盒
  * - 无渲染、无重力、不可动、不 tick（纯静态碰撞体）
  * - isPushable = true：1.21.1 的 {@code Level.getEntityCollisions} 用 Entity::isPushable
  *   过滤，只有 isPushable 的实体才参与玩家/生物碰撞（这就是挡人的前提）；
  *   push(Vec3)/push(Entity) 空实现屏蔽被推动 → 玩家撞上来碰撞体纹丝不动
- * - canBeCollidedWith = active（同步字段）：静态盒恒 true；动态盒（@Anim）随服务端
- *   OPEN_PARTS 翻转——门开 active=false 可穿过、门关 active=true 阻挡
- * - isPickable = animBinding != null（子工程 7）：仅交互碰撞体（`col:xxx@Anim`）可被
- *   准星选中并右键 toggle；纯碰撞盒（`col:xxx`）不可选中（无"可交互"高亮）
- * - interact（子工程 7）：服务端执行 {@code GlbInteraction.toggle}，右键开关门
+ * - canBeCollidedWith = collides && active（同步字段）：
+ *   `col:` 恒参与碰撞（静态 true / 动态盒 @Anim 随服务端 OPEN_PARTS 翻转）；
+ *   `use:`（子工程 8）恒 false → 玩家可穿过（物件类交互盒不挡人）
+ * - isPickable = pickEnabled && (animBinding != null || cmdKey != null)（子工程 7 + 8）：
+ *   配置了动画或命令键的才可被准星选中并右键；纯碰撞盒不可选中（无"可交互"高亮）
+ * - interact（子工程 7 + 8）：服务端按「动画 → 状态 → 命令」顺序执行——
+ *   动画 toggle（复用 GlbInteraction）+ `$命令键` 查 commands.json 执行 + 一次性消耗（可回滚）
  * - AABB 通过 SynchedEntityData 同步 6 个 double（LONG 承载位），客户端实体也有正确碰撞箱
  *   （玩家客户端移动预测用 getBoundingBox()）
- * - 持久化：依赖父摆放（PlacementSavedData）恢复重建；实体本身兜底写 AABB + animBinding
- *   （active 不持久化：重启强制恢复阻挡，与 OPEN_PARTS 内存态清零、门默认关闭一致）
+ * - 持久化：依赖父摆放（PlacementSavedData）恢复重建；实体本身兜底写 AABB + 部件名/动画/命令/是否碰撞
+ *   （active / pickEnabled 不持久化：重启强制恢复"阻挡 + 可点"，与 OPEN_PARTS / CONSUMED 内存态清零一致）
  */
 public class ColliderEntity extends Entity {
     // 碰撞盒坐标用 double 精度同步（MC 原生只有 FLOAT，float 精度 ~1e-7 临界于 collideX 的 1e-7 容差，
@@ -60,6 +66,22 @@ public class ColliderEntity extends Entity {
 
     /** 是否阻挡（子工程 7）：门关=true 挡人；门开=false 可穿过（保留实体供再次右键关门）。随 entityData 同步客户端移动预测 */
     private static final EntityDataAccessor<Boolean> DATA_ACTIVE =
+            SynchedEntityData.defineId(ColliderEntity.class, EntityDataSerializers.BOOLEAN);
+
+    /** 部件名（子工程 8：`col:`/`use:` 之后、`@`/`$` 之前的名字）；空串 = 未知。用于 %part% 占位符 + 消耗状态 key + 日志 */
+    private static final EntityDataAccessor<String> DATA_PART_NAME =
+            SynchedEntityData.defineId(ColliderEntity.class, EntityDataSerializers.STRING);
+
+    /** 命令映射键（子工程 8：`$Key` 后缀，commands.json 的键）；空串 = 无命令 */
+    private static final EntityDataAccessor<String> DATA_CMD_KEY =
+            SynchedEntityData.defineId(ColliderEntity.class, EntityDataSerializers.STRING);
+
+    /** 是否参与实体碰撞（子工程 8）：`col:` → true（挡人）；`use:` → false（玩家可穿过） */
+    private static final EntityDataAccessor<Boolean> DATA_COLLIDES =
+            SynchedEntityData.defineId(ColliderEntity.class, EntityDataSerializers.BOOLEAN);
+
+    /** 是否仍可被右键（子工程 8）：一次性命令盒执行"成功"后置 false（不可点 + 不挡人）；不持久化，重启恢复 true */
+    private static final EntityDataAccessor<Boolean> DATA_PICK_ENABLED =
             SynchedEntityData.defineId(ColliderEntity.class, EntityDataSerializers.BOOLEAN);
 
     /** 当前世界 AABB（从 SynchedEntityData 重建；makeBoundingBox override 恒返回它，可表达任意矩形盒） */
@@ -94,12 +116,24 @@ public class ColliderEntity extends Entity {
         builder.define(DATA_MAX_Z, 0L);
         builder.define(DATA_ANIM_BINDING, "");
         builder.define(DATA_ACTIVE, true);
+        builder.define(DATA_PART_NAME, "");
+        builder.define(DATA_CMD_KEY, "");
+        // 默认 true：旧存档/旧实体没有该字段时行为与子工程 6/7 完全一致（阻挡）
+        builder.define(DATA_COLLIDES, true);
+        builder.define(DATA_PICK_ENABLED, true);
     }
 
-    /** 服务端：设置世界 AABB（碰撞体位置 = 盒中心）+ 动画绑定，随 addEntity 包自动同步客户端（double 经 long bits 承载） */
-    public void setBox(AABB worldBox, String binding) {
+    /**
+     * 服务端：设置世界 AABB（碰撞体位置 = 盒中心）+ 部件名/动画绑定/命令键/是否碰撞，
+     * 随 addEntity 包自动同步客户端（double 经 long bits 承载）。
+     */
+    public void setBox(AABB worldBox, String partName, String animBinding, String cmdKey, boolean collides) {
         this.box = worldBox;
-        this.entityData.set(DATA_ANIM_BINDING, binding == null ? "" : binding);
+        this.entityData.set(DATA_ANIM_BINDING, animBinding == null ? "" : animBinding);
+        this.entityData.set(DATA_PART_NAME, partName == null ? "" : partName);
+        this.entityData.set(DATA_CMD_KEY, cmdKey == null ? "" : cmdKey);
+        this.entityData.set(DATA_COLLIDES, collides);
+        this.entityData.set(DATA_PICK_ENABLED, true);   // 新建/恢复的盒默认可点
         this.entityData.set(DATA_MIN_X, Double.doubleToLongBits(worldBox.minX));
         this.entityData.set(DATA_MIN_Y, Double.doubleToLongBits(worldBox.minY));
         this.entityData.set(DATA_MIN_Z, Double.doubleToLongBits(worldBox.minZ));
@@ -114,10 +148,37 @@ public class ColliderEntity extends Entity {
         return box;
     }
 
-    /** 绑定的动画名；null = 纯碰撞盒（无交互）。双端一致（entityData 同步） */
+    /** 绑定的动画名；null = 无动画绑定。双端一致（entityData 同步） */
     public String getAnimBinding() {
         String s = this.entityData.get(DATA_ANIM_BINDING);
         return (s == null || s.isEmpty()) ? null : s;
+    }
+
+    /** 部件名（`col:`/`use:` 之后的原始名）；null = 未知 */
+    public String getPartName() {
+        String s = this.entityData.get(DATA_PART_NAME);
+        return (s == null || s.isEmpty()) ? null : s;
+    }
+
+    /** 命令映射键（`$Key`）；null = 无命令。双端一致（entityData 同步，客户端 isPickable 判据之一） */
+    public String getCmdKey() {
+        String s = this.entityData.get(DATA_CMD_KEY);
+        return (s == null || s.isEmpty()) ? null : s;
+    }
+
+    /** 是否参与实体碰撞（`col:` → true / `use:` → false） */
+    public boolean collides() {
+        return this.entityData.get(DATA_COLLIDES);
+    }
+
+    /** 是否仍可被右键（命令盒消耗后 false） */
+    public boolean isPickEnabled() {
+        return this.entityData.get(DATA_PICK_ENABLED);
+    }
+
+    /** 一次性命令盒消耗/回滚 */
+    public void setPickEnabled(boolean enabled) {
+        this.entityData.set(DATA_PICK_ENABLED, enabled);
     }
 
     /**
@@ -193,11 +254,12 @@ public class ColliderEntity extends Entity {
      * 可被碰撞（核心）：1.21.1 的 {@code Level.getEntityCollisions} 用
      * {@code 移动实体.canCollideWith(本实体)} 过滤，而 {@code Entity.canCollideWith(e)} 内部调用
      * {@code e.canBeCollidedWith()}（默认 false）→ 不 override 则碰撞体永远不会进入玩家/生物的碰撞判定。
-     * 动态盒（@Anim）随 active 翻转：门开=false 可穿过，门关=true 阻挡。
+     * - `col:` 前缀：随 active 翻转（门开=false 可穿过，门关=true 阻挡）
+     * - `use:` 前缀（子工程 8）：collides=false → 恒不挡人（玩家可穿过，但仍可被右键）
      */
     @Override
     public boolean canBeCollidedWith() {
-        return this.entityData.get(DATA_ACTIVE);
+        return collides() && this.entityData.get(DATA_ACTIVE);
     }
 
     @Override
@@ -223,13 +285,13 @@ public class ColliderEntity extends Entity {
     }
 
     /**
-     * 可被准星选中（子工程 7）：仅交互碰撞体（`col:xxx@Anim`，animBinding != null）返回 true，
-     * 准星命中后客户端发 interact 包 → 服务端 interact 执行右键 toggle。
-     * 纯碰撞盒（`col:xxx` 无 @）保持 false：玩家瞄墙不会出现"可交互"高亮（交接文档 §9 踩坑 2）。
+     * 可被准星选中（子工程 7 + 8）：配置了动画绑定（`@Anim`）或命令键（`$Key`）且未被消耗时返回 true，
+     * 准星命中后客户端发 interact 包 → 服务端 interact 执行右键逻辑。
+     * 纯碰撞盒（`col:xxx` 无 @ 无 $）保持 false：玩家瞄墙不会出现"可交互"高亮（交接文档 §9 踩坑 2）。
      */
     @Override
     public boolean isPickable() {
-        return getAnimBinding() != null;
+        return isPickEnabled() && (getAnimBinding() != null || getCmdKey() != null);
     }
 
     /**
@@ -242,18 +304,65 @@ public class ColliderEntity extends Entity {
     }
 
     /**
-     * 右键交互（子工程 7 + 事项 4）：服务端执行 toggle（开门/关门翻转，动画 + 碰撞状态），
-     * 按「摆放 id + 动画名」精确匹配（多同名门独立开关）。
-     * 纯碰撞盒返回 PASS；交互盒返回 SUCCESS。客户端只负责准星命中（isPickable + getBoundingBox），
-     * 不在此执行逻辑（多端同步由服务端广播保证）。
+     * 右键交互（子工程 7 + 8）：服务端按「动画 → 状态 → 命令」固定顺序执行。
+     *
+     * <pre>
+     * 1) 无 @ 无 $            → PASS（纯碰撞，不可交互）
+     * 2) 客户端               → SUCCESS（只负责准星拾取，逻辑全在服务端）
+     * 3) 已消耗 / 命令键不存在 → 不消耗（键不存在额外 warn + actionbar 提示）
+     * 4) 动画绑定             → GlbInteraction.toggle（开门/关门，子工程 7 语义不变）
+     * 5) 消耗占位             → pickEnabled=false + active=false + CONSUMED.add（先占位，命令后回滚）
+     * 6) 命令                 → CommandTable.run；consume="result" 且返回值 &lt;= 0 → 回滚消耗
+     * </pre>
+     *
+     * <p>先占位再回滚的原因：命令串里可能含 `/objremove %placement%`（执行后本实体已被移除），
+     * 放在命令之后设状态不安全；而 `consume:"result"` 又要求按返回值回滚。
      */
     @Override
     public InteractionResult interact(Player player, InteractionHand hand) {
-        if (getAnimBinding() == null) {
-            return InteractionResult.PASS; // 纯碰撞（col:xxx）：无交互
+        String anim = getAnimBinding();
+        String cmd = getCmdKey();
+        if (anim == null && cmd == null) {
+            return InteractionResult.PASS; // 纯碰撞（col:xxx / use:xxx 无后缀）：无交互
         }
-        if (!this.level().isClientSide) {
-            GlbInteraction.toggle((ServerLevel) this.level(), getPlacementId(), getAnimBinding());
+        if (this.level().isClientSide) {
+            return InteractionResult.SUCCESS; // 客户端只做准星拾取
+        }
+        if (!isPickEnabled()) {
+            return InteractionResult.PASS; // 服务端权威：已消耗（客户端可能时序性重发 interact 包）
+        }
+        if (!(player instanceof ServerPlayer serverPlayer)) {
+            return InteractionResult.PASS;
+        }
+        ServerLevel serverLevel = (ServerLevel) this.level();
+        if (cmd != null && !CommandTable.has(cmd)) {
+            // 键不存在：不消耗、不静默（否则现场极难排查"点了没反应"）
+            PolarisObjuilder.LOGGER.warn("[Objuilder] 命令键 '{}' 不存在（部件 '{}'，摆放 #{}）",
+                    cmd, getPartName(), getPlacementId());
+            player.displayClientMessage(
+                    Component.literal("§c[Objuilder] 命令键未配置: " + cmd), true);
+            return InteractionResult.SUCCESS;
+        }
+        // 1) 动画（复用子工程 7 机制）
+        if (anim != null) {
+            GlbInteraction.toggle(serverLevel, getPlacementId(), anim);
+        }
+        // 2) 消耗占位（仅命令盒；默认 consume="result"）
+        boolean consume = cmd != null && CommandTable.shouldConsume(cmd);
+        if (consume) {
+            setPickEnabled(false);
+            setActive(false);
+            GlbInteraction.markConsumed(getPlacementId(), getPartName());
+        }
+        // 3) 命令（服务端、以玩家身份、带占位符）
+        if (cmd != null) {
+            int result = CommandTable.run(serverPlayer, cmd, getPartName(), getPlacementId(), this.box.getCenter());
+            if (consume && CommandTable.mode(cmd) == CommandTable.Consume.RESULT && result <= 0) {
+                // 命令未生效（如 execute if 条件不成立）→ 回滚消耗，稍后可重试
+                setPickEnabled(true);
+                setActive(true);
+                GlbInteraction.unmarkConsumed(getPlacementId(), getPartName());
+            }
         }
         return InteractionResult.SUCCESS;
     }
@@ -280,9 +389,14 @@ public class ColliderEntity extends Entity {
         this.entityData.set(DATA_MAX_Y, Double.doubleToLongBits(tag.getDouble("maxY")));
         this.entityData.set(DATA_MAX_Z, Double.doubleToLongBits(tag.getDouble("maxZ")));
         this.entityData.set(DATA_ANIM_BINDING, tag.getString("animBinding"));
-        // active 不持久化：重启强制恢复"阻挡"——与 OPEN_PARTS 内存态清零（门默认关闭）一致，
-        // 保证重启后碰撞状态与动画初始姿势（门关）对齐
+        this.entityData.set(DATA_PART_NAME, tag.getString("partName"));
+        this.entityData.set(DATA_CMD_KEY, tag.getString("cmdKey"));
+        // 旧存档（子工程 6/7）没有 collides → 默认 true（保持原"col: 挡人"行为）
+        this.entityData.set(DATA_COLLIDES, !tag.contains("collides") || tag.getBoolean("collides"));
+        // active / pickEnabled 不持久化：重启强制恢复"阻挡 + 可点"——与 OPEN_PARTS / CONSUMED 内存态清零
+        // （门默认关闭、命令盒恢复可点）一致，保证重启后碰撞状态与动画初始姿势（门关）对齐
         this.entityData.set(DATA_ACTIVE, true);
+        this.entityData.set(DATA_PICK_ENABLED, true);
         rebuildBox();
     }
 
@@ -295,6 +409,9 @@ public class ColliderEntity extends Entity {
         tag.putDouble("maxY", box.maxY);
         tag.putDouble("maxZ", box.maxZ);
         tag.putString("animBinding", getAnimBinding() == null ? "" : getAnimBinding());
+        tag.putString("partName", getPartName() == null ? "" : getPartName());
+        tag.putString("cmdKey", getCmdKey() == null ? "" : getCmdKey());
+        tag.putBoolean("collides", collides());
     }
 
     @Override
