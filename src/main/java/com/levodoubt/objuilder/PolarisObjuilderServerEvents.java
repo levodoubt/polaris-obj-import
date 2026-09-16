@@ -343,12 +343,18 @@ public class PolarisObjuilderServerEvents {
                 String.format("§7[Objuilder] 命令表 %d 个键（%s）：", keys.size(), CommandTable.file())), false);
         for (String key : keys) {
             CommandTable.Entry e = CommandTable.get(key);
-            String cmd = e == null ? "" : e.cmd();
+            String cmd = "";
+            String more = "";
+            if (e != null) {
+                List<String> cmds = e.cmds();
+                cmd = cmds.isEmpty() ? "" : cmds.get(0);
+                if (cmds.size() > 1) more = " §8(+" + (cmds.size() - 1) + " 条)";
+            }
             if (cmd.length() > 70) cmd = cmd.substring(0, 70) + "…";
             String flags = e == null ? "" : String.format(" §8[perm=%d consume=%s%s]",
                     e.perm(), e.consume().name().toLowerCase(java.util.Locale.ROOT),
                     e.feedback() ? " feedback" : "");
-            String line = "  §f" + key + " §7→ §a" + cmd + flags;
+            String line = "  §f" + key + " §7→ §a" + cmd + more + flags;
             source.sendSuccess(() -> Component.literal(line), false);
         }
         return 1;
@@ -364,7 +370,7 @@ public class PolarisObjuilderServerEvents {
         }
         int result = CommandTable.run(player, key, "test", -1, player.position());
         source.sendSuccess(() -> Component.literal(String.format(
-                "§a[Objuilder] 测试命令键 '%s' → 返回值 %d（未消耗任何部件）", key, result)), false);
+                "§a[Objuilder] 测试命令键 '%s' → 返回值 %d（未消耗任何部件；多命令为各条返回值之和）", key, result)), false);
         return result > 0 ? 1 : 0;
     }
 
