@@ -54,6 +54,8 @@ public class DomainModelCache {
     private static final Map<Integer, Set<Integer>> DOUBLE_SIDED = new HashMap<>();
     /** modelId → MASK 镂空的 materialId 集合（glTF alphaMode=MASK → alpha-test cutout 渲染，B1 收尾·事项 5） */
     private static final Map<Integer, Set<Integer>> MASKED = new HashMap<>();
+    /** modelId → 贴图驱动半透明的 materialId 集合（glTF alphaMode=BLEND 且 base 图 alpha 通道非全不透明，2.1.15） */
+    private static final Map<Integer, Set<Integer>> TRANSLUCENT = new HashMap<>();
     /** 无贴图时的白色回退 sprite */
     private static TextureAtlasSprite fallbackSprite;
     /** 模型 id 序号（每次导入自增，唯一） */
@@ -337,6 +339,21 @@ public class DomainModelCache {
         return s != null && s.contains(materialId);
     }
 
+    /** 设置某模型的<b>贴图驱动半透明</b>材质索引集合（BLEND + base 图 alpha 通道非全不透明，2.1.15） */
+    public static void setMaterialTranslucent(int modelId, Set<Integer> translucentMats) {
+        if (translucentMats == null || translucentMats.isEmpty()) {
+            TRANSLUCENT.remove(modelId);
+        } else {
+            TRANSLUCENT.put(modelId, translucentMats);
+        }
+    }
+
+    /** 某模型某材质是否贴图驱动半透明（透明度来自 base 贴图 alpha，标量 alpha 为 1） */
+    public static boolean isTranslucent(int modelId, int materialId) {
+        Set<Integer> s = TRANSLUCENT.get(modelId);
+        return s != null && s.contains(materialId);
+    }
+
     /**
      * 释放某模型的全部缓存（B1 收尾·事项 1：引用计数归零后调用）。
      * 释放几何 / AABB / 颜色 / 发光 / 透明度 / doubleSided 映射，以及该模型独占的动态纹理
@@ -364,6 +381,7 @@ public class DomainModelCache {
         ALPHAS.remove(modelId);
         DOUBLE_SIDED.remove(modelId);
         MASKED.remove(modelId);
+        TRANSLUCENT.remove(modelId);
     }
 
     /** 取模型几何（单域整体三角形） */
@@ -471,6 +489,7 @@ public class DomainModelCache {
         ALPHAS.clear();
         DOUBLE_SIDED.clear();
         MASKED.clear();
+        TRANSLUCENT.clear();
     }
 
     /**

@@ -184,12 +184,14 @@ public class PlacementModelLoader {
         List<NativeImage> speculars = ObjImportCommand.glbMaterialSpecularImages(model);
         ObjImportCommand.fillBaseColorsForGlbPbr(textures, normals, speculars, model);
         ObjImportCommand.binarizeGlbMaskAlphas(textures, model); // MASK alpha 二值化（shadow pass 正确镂空，2.1.10 问题 2）
+        Set<Integer> texturedTranslucent = ObjImportCommand.glbTexturedTranslucentMaterials(model, textures); // BLEND+贴图 alpha（2.1.15 灯罩玻璃）
         Map<Integer, ResourceLocation> texMap = DomainModelCache.registerPbrTextures(textures, normals, speculars);
         DomainModelCache.setMaterialColors(modelId, ObjImportCommand.glbMaterialColors(model));
         DomainModelCache.setMaterialEmissive(modelId, ObjImportCommand.glbMaterialEmissive(model));
         DomainModelCache.setMaterialAlpha(modelId, ObjImportCommand.glbMaterialAlphas(model));
         DomainModelCache.setDoubleSided(modelId, ObjImportCommand.glbDoubleSidedMaterials(model));
         DomainModelCache.setMaterialMasked(modelId, ObjImportCommand.glbMaskedMaterials(model));
+        DomainModelCache.setMaterialTranslucent(modelId, texturedTranslucent);
         Voxelizer.Domain domain = new Voxelizer.Domain(0, flat.ox(), flat.oy(), flat.oz(),
                 new ObjMesh.Vec3(0, 1, 0), flat.triangles());
         DomainModelCache.bake(modelId, List.of(domain), sprite, texMap);
@@ -206,7 +208,8 @@ public class PlacementModelLoader {
                     m.emissiveFactor != null ? java.util.Arrays.toString(m.emissiveFactor) : "null",
                     m.doubleSided, aFlag));
         }
-        PolarisObjuilder.LOGGER.info("[Objuilder] glb 材质解析 modelId={}: {}", modelId, dbg);
+        PolarisObjuilder.LOGGER.info("[Objuilder] glb 材质解析 modelId={}: {}  半透明(贴图alpha)材质={}",
+                modelId, dbg, texturedTranslucent);
         return modelId;
     }
 

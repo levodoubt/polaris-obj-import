@@ -867,6 +867,7 @@ public class ObjImportCommand {
             DomainModelCache.setMaterialAlpha(modelId, glbMaterialAlphas(model));
             DomainModelCache.setDoubleSided(modelId, glbDoubleSidedMaterials(model));
             DomainModelCache.setMaterialMasked(modelId, glbMaskedMaterials(model));
+            DomainModelCache.setMaterialTranslucent(modelId, glbTexturedTranslucentMaterials(model, textures));
             Voxelizer.Domain domain = new Voxelizer.Domain(0, flat.ox(), flat.oy(), flat.oz(),
                     new ObjMesh.Vec3(0, 1, 0), flat.triangles());
             DomainModelCache.bake(modelId, List.of(domain), sprite, texMap);
@@ -1010,6 +1011,48 @@ public class ObjImportCommand {
             if ("MASK".equalsIgnoreCase(model.materials.get(i).alphaMode)) s.add(i);
         }
         return s;
+    }
+
+    /**
+     * glb 材质 → <b>贴图驱动的半透明</b> materialId 集合（2.1.15 · 灯罩玻璃不透明问题）。
+     *
+     * <p>背景：glTF 的 {@code alphaMode=BLEND} 只声明"按 alpha 混合"，真正的 alpha 通常来自
+     * baseColorTexture 的 alpha 通道——Blender 里"玻璃外壳"就是这个形态：
+     * {@code baseColorFactor.a = 1}（无标量透明度），贴图 alpha 却在 0.4~1.0 之间。
+     * 此前 {@link #glbMaterialAlphas} 只读 baseColorFactor[3] → 判为不透明 → 玻璃走了
+     * 不透明 renderType（NO_TRANSPARENCY）→ 光照下呈灰白实体（渲染成水泥块）。
+     *
+     * <p>这里补上"贴图 alpha 真的非全不透明"的判断：BLEND 且标量 alpha 已为 1 的材质，
+     * 检查其 base 图是否有 alpha 通道且存在 &lt;250 的像素 → 记入半透明集合。
+     * 渲染器据此选 {@code ENTITY_TRIANGLES_TRANSLUCENT}（TRANSLUCENT_TRANSPARENCY + 只写颜色），
+     * 由 shader 用贴图 alpha 做混合 —— 玻璃恢复透明，且不再向 shadowtex 写实心深度。
+     *
+     * <p>必须在使用者<b>不改写</b> base 图时调用（MASK 二值化只动 MASK 材质，互不影响）。
+     */
+    public static Set<Integer> glbTexturedTranslucentMaterials(GlbModel model, List<NativeImage> bases) {
+        Set<Integer> s = new HashSet<>();
+        for (int i = 0; i < model.materials.size(); i++) {
+            GlbModel.Material m = model.materials.get(i);
+            if (!"BLEND".equalsIgnoreCase(m.alphaMode)) continue;
+            if (m.baseColorFactor != null && clamp01(m.baseColorFactor[3]) < 1f) continue; // 标量 alpha 已覆盖
+            NativeImage base = bases != null && i < bases.size() ? bases.get(i) : null;
+            if (base != null && hasTranslucentPixels(base)) s.add(i);
+        }
+        return s;
+    }
+
+    /** base 图是否含非全不透明像素（仅 RGBA 图有效；按步长采样，1M 像素也只需 ~16k 次读取） */
+    private static boolean hasTranslucentPixels(NativeImage img) {
+        if (img.format() != NativeImage.Format.RGBA) return false; // RGB/亮度图无 alpha 通道 → 恒定不透明
+        int w = img.getWidth(), h = img.getHeight();
+        if (w <= 0 || h <= 0) return false;
+        int stepX = Math.max(1, w / 128), stepY = Math.max(1, h / 128);
+        for (int y = 0; y < h; y += stepY) {
+            for (int x = 0; x < w; x += stepX) {
+                if (((img.getPixelRGBA(x, y) >>> 24) & 0xFF) < 250) return true; // ABGR 布局：bit24-31=A
+            }
+        }
+        return false;
     }
 
     // ===================== MASK alpha 二值化（2.1.10 光影问题探究·问题 2 落地） =====================

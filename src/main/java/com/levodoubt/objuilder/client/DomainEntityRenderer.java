@@ -68,6 +68,15 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
 
         // 阴影 pass 用细分 LOD（大面拆分，边长 ≤4 格 → 阴影稳定），主 pass 用原始网格。
         boolean shadowPass = ShadowPassDetect.isShadowPass();
+        if (shadowPass) {
+            // 2.1.15 问题 1 取证：证明本摆放是否真的被画进 shadowtex（含 Iris 侧实体阴影开关状态）
+            logShadowDiagnostic(modelId);
+        } else if (!shadowDiagMainLogged) {
+            shadowDiagMainLogged = true;
+            com.levodoubt.objuilder.PolarisObjuilder.LOGGER.info(
+                    "[Objuilder][阴影诊断] 主 pass 首次绘制 modelId={} · Iris 绑定={}（此后每 2 秒在阴影 pass 内打印一行）",
+                    modelId, ShadowPassDetect.bindStatus());
+        }
 
         // 方案 A：静态（非动画中）模型走 GPU 常驻 VBO 直绘——每帧仅 bind + drawWithShader，
         // 消除每帧 CPU 顶点提交与 GPU 上传。动画模型返回 null → 回退下方 CPU 紧凑网格路径。
@@ -104,9 +113,9 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
             // 该材质的纹理（null = 无贴图 → 用默认白 + 中性 PBR，避免光影下 texture_s/n 缺失产生噪点）
             ResourceLocation matTex = DomainModelCache.texture(modelId, matId);
             boolean noTex = matTex == null;
-            // 该材质的透明度（<1 = 半透明）
+            // 该材质的透明度（<1 = 半透明；或 alphaMode=BLEND 且贴图 alpha 通道非全不透明，2.1.15）
             float alpha = DomainModelCache.alpha(modelId, matId);
-            boolean translucent = alpha < 1f;
+            boolean translucent = alpha < 1f || DomainModelCache.isTranslucent(modelId, matId);
             // MASK 材质（alphaMode=MASK）→ alpha-test cutout；doubleSided 材质 → NO_CULL；
             // 阴影 pass 强制单面 CULL（doubleSided 薄壳两面写深度互搏 → 自阴影斑块）。
             boolean doubleSided = DomainModelCache.isDoubleSided(modelId, matId) && !shadowPass;
@@ -162,6 +171,42 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
     }
 
     private static boolean warnedMissing = false;
+    /** 阴影诊断节流（同一模型 2 秒一条，避免刷屏） */
+    private static int shadowDiagModelId = Integer.MIN_VALUE;
+    private static long shadowDiagAtMs = 0L;
+    /** 主 pass 首帧诊断只打一次（用于确认 Iris 反射绑定是否成功） */
+    private static boolean shadowDiagMainLogged = false;
+
+    /**
+     * 2.1.15 问题 1（"模型无投影/无阴影"）取证日志。
+     *
+     * <p>本方法在<b>阴影 pass 内</b>被调用 = 已证明渲染器在阴影 pass 被调用、几何已提交；
+     * 若日志完全不出现，说明 Iris 没把该实体纳入阴影 pass（开关/距离/剔除问题）。
+     * 同时打印 Iris 侧状态：{@code 实体阴影开关=关} 即光影包 shadowEntities=false（Photon 的
+     * ENTITY_SHADOWS 选项关闭时如此，此时任何实体都不会进 shadowtex，与本 mod 无关）；
+     * {@code 本帧阴影实体数=0} 表示 Iris 认为没有实体需要投影。
+     */
+    private static void logShadowDiagnostic(int modelId) {
+        long now = net.minecraft.Util.getMillis();
+        if (modelId == shadowDiagModelId && now - shadowDiagAtMs < 2000L) return;
+        shadowDiagModelId = modelId;
+        shadowDiagAtMs = now;
+        RenderMesh mesh = DomainModelCache.getRenderMesh(modelId, true);
+        int entities = ShadowPassDetect.renderedShadowEntities();
+        int flag = ShadowPassDetect.shouldRenderEntities();
+        float mul = ShadowPassDetect.entityShadowDistanceMultiplier();
+        com.levodoubt.objuilder.PolarisObjuilder.LOGGER.info(
+                "[Objuilder][阴影诊断] 阴影 pass 正在绘制 modelId={} 顶点={} 材质run={} ‖ Iris: 绑定={} 阴影图={} 视距={} 实体阴影开关={} 实体距离倍率={} 本帧阴影实体数={}",
+                modelId,
+                mesh == null ? -1 : mesh.vertexCount,
+                mesh == null ? -1 : mesh.runCount,
+                ShadowPassDetect.bindStatus(),
+                ShadowPassDetect.resolution(),
+                ShadowPassDetect.renderDistance(),
+                flag < 0 ? "?" : (flag == 1 ? "开" : "★关"),
+                mul < 0 ? "?" : String.format("%.2f", mul),
+                entities);
+    }
 
     @Override
     public ResourceLocation getTextureLocation(DomainEntity entity) {

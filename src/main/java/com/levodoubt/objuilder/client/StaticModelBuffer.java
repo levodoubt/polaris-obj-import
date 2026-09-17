@@ -83,7 +83,7 @@ public final class StaticModelBuffer {
             ResourceLocation matTex = DomainModelCache.texture(modelId, matId);
             boolean noTex = matTex == null;
             float alpha = DomainModelCache.alpha(modelId, matId);
-            boolean translucent = alpha < 1f;
+            boolean translucent = alpha < 1f || DomainModelCache.isTranslucent(modelId, matId);
             boolean doubleSided = DomainModelCache.isDoubleSided(modelId, matId) && !shadowPass;
             boolean masked = DomainModelCache.isMasked(modelId, matId);
             RenderType rt;
