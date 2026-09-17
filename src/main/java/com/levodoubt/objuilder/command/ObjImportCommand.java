@@ -1289,7 +1289,7 @@ public class ObjImportCommand {
                     float lum = r * 0.299f + g * 0.587f + b * 0.114f;
                     e = Math.max(e, lum);
                 }
-                out.setPixelRGBA(x, y, packLabPbr(clamp01(metal), clamp01(roughP), clamp01(e)));
+                out.setPixelRGBA(x, y, packLabPbr(clamp01(metal), clamp01(roughP), clamp01(e), true));
             }
         }
         return out;
@@ -1305,8 +1305,24 @@ public class ObjImportCommand {
      * NativeImage ABGR：bit0-7=R · bit8-15=G · bit16-23=B · bit24-31=A。
      */
     private static int packLabPbr(float metal, float rough, float emissive) {
+        return packLabPbr(metal, rough, emissive, false);
+    }
+
+    /**
+     * @param metalnessAware glb 路径传 true：按"金属度"而非"介电 F0"编码金属。
+     *   Photon 的 G 通道是 F0/金属选择器：G &gt;= 237.5/255 → albedo-metal（用 albedo 当 F0，真金属），
+     *   G 在 [230,237.5) → 内置金属表，G &lt; 229.5/255 → 介电 F0。
+     *   ⚠️ 旧实现把 metal 在 [0,0.9) 时线性写成 F0=0.04+metal*0.86（metal=0.7 → F0=0.64），
+     *   这在 Photon 里是"高反射介电"而不是金属 → 表现为**大面积白色高光**
+     *   （Blender 里是金属、游戏里发白的根因；实测步枪贴图 31% 像素金属度落在 0.5~0.9）。
+     *   故 glb 路径按 metal&gt;=0.5 二值化到 albedo-metal，其余压到介电低 F0（&lt;=0.13）。
+     *   OBJ 路径（Ks 近似，视觉已验收）保持旧行为不变。
+     */
+    private static int packLabPbr(float metal, float rough, float emissive, boolean metalnessAware) {
         float smooth = 1f - (float) Math.sqrt(clamp01(rough));
-        float f0 = metal >= 0.9f ? 240f / 255f : 0.04f + metal * 0.86f;
+        float f0 = metalnessAware
+                ? (metal >= 0.5f ? 240f / 255f : 0.04f + metal * 0.18f)
+                : (metal >= 0.9f ? 240f / 255f : 0.04f + metal * 0.86f);
         int R = Math.round(clamp01(smooth) * 255f);   // GL R = smoothness
         int G = Math.round(clamp01(f0) * 255f);       // GL G = F0
         int A = emissive <= 0.001f ? 255
