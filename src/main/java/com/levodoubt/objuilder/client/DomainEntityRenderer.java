@@ -171,8 +171,9 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
     }
 
     private static boolean warnedMissing = false;
-    /** 阴影诊断节流（同一模型 2 秒一条，避免刷屏） */
-    private static int shadowDiagModelId = Integer.MIN_VALUE;
+    /** 阴影诊断：已打印过首帧行的模型（每模型先一行；节流必须与模型 id 无关，见下） */
+    private static final java.util.Set<Integer> SHADOW_DIAG_SEEN = new java.util.HashSet<>();
+    /** 阴影诊断上一次打印时刻（全局节流。0.3.3 按模型 id 记时，被"同一帧多模型交替"绕过 → 每帧刷屏，0.3.4 修） */
     private static long shadowDiagAtMs = 0L;
     /** 主 pass 首帧诊断只打一次（用于确认 Iris 反射绑定是否成功） */
     private static boolean shadowDiagMainLogged = false;
@@ -185,11 +186,13 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
      * 同时打印 Iris 侧状态：{@code 实体阴影开关=关} 即光影包 shadowEntities=false（Photon 的
      * ENTITY_SHADOWS 选项关闭时如此，此时任何实体都不会进 shadowtex，与本 mod 无关）；
      * {@code 本帧阴影实体数=0} 表示 Iris 认为没有实体需要投影。
+     *
+     * <p>节流：每个模型首次各打一行，之后全局每 30 秒最多一行。
      */
     private static void logShadowDiagnostic(int modelId) {
         long now = net.minecraft.Util.getMillis();
-        if (modelId == shadowDiagModelId && now - shadowDiagAtMs < 2000L) return;
-        shadowDiagModelId = modelId;
+        boolean first = SHADOW_DIAG_SEEN.add(modelId);
+        if (!first && now - shadowDiagAtMs < 30000L) return;
         shadowDiagAtMs = now;
         RenderMesh mesh = DomainModelCache.getRenderMesh(modelId, true);
         int entities = ShadowPassDetect.renderedShadowEntities();
