@@ -232,11 +232,14 @@ public class GlbModel {
     public static final class LightDef {
         /** 去掉 `light:` 前缀后的名字 */
         public final String name;
+        /** 光照等级 1..15（node 名 `light:<name>@<level>`，缺省 15 = 最强/半径最大） */
+        public final int level;
         public final float minX, minY, minZ, maxX, maxY, maxZ;
 
-        public LightDef(String name, float minX, float minY, float minZ,
+        public LightDef(String name, int level, float minX, float minY, float minZ,
                         float maxX, float maxY, float maxZ) {
             this.name = name;
+            this.level = Math.max(1, Math.min(15, level));
             this.minX = minX; this.minY = minY; this.minZ = minZ;
             this.maxX = maxX; this.maxY = maxY; this.maxZ = maxZ;
         }
@@ -248,6 +251,31 @@ public class GlbModel {
     /** 是否为光源盒 node（`light:` 前缀） */
     public static boolean isLightNode(String nodeName) {
         return nodeName != null && nodeName.startsWith(PREFIX_LIGHT);
+    }
+
+    /**
+     * 解析 `light:` node 名里的**光照等级**：语法 `light:<name>@<level>`（1..15，缺省 15）。
+     *
+     * <p>等级决定该光源的照亮半径：桌面小灯用 6~10 可显著压小半径，避免"光穿墙照亮隔壁房间"，
+     * 也不会盖住旁边火把/其它光源的影子（Photon 的方块光是沿半径衰减的发光球，半径 = 等级）。
+     */
+    public static int parseLightLevel(String nodeName) {
+        if (nodeName == null) return 15;
+        int at = nodeName.lastIndexOf('@');
+        if (at < 0) return 15;
+        try {
+            return Math.max(1, Math.min(15, Integer.parseInt(nodeName.substring(at + 1).trim())));
+        } catch (NumberFormatException e) {
+            return 15;
+        }
+    }
+
+    /** 去掉 `light:` 前缀与 `@<level>` 后缀后的显示名（日志/回执用） */
+    public static String lightDisplayName(String nodeName) {
+        if (nodeName == null) return "";
+        String s = nodeName.substring(PREFIX_LIGHT.length()).trim();
+        int at = s.lastIndexOf('@');
+        return at < 0 ? s : s.substring(0, at).trim();
     }
 
     public final String name;
@@ -371,7 +399,7 @@ public class GlbModel {
         if (isLightNode(n.name) && n.meshes.length > 0) {
             float[] mm = nodeAabb(n, world);
             if (mm != null) {
-                lights.add(new LightDef(n.name.substring(PREFIX_LIGHT.length()).trim(),
+                lights.add(new LightDef(lightDisplayName(n.name), parseLightLevel(n.name),
                         mm[0], mm[1], mm[2], mm[3], mm[4], mm[5]));
             }
         }

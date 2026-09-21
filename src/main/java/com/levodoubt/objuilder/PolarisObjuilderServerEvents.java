@@ -529,7 +529,7 @@ public class PolarisObjuilderServerEvents {
         int placed = 0;
         for (GlbModel.LightDef l : lights) {
             AABB box = worldBox(l.minX, l.minY, l.minZ, l.maxX, l.maxY, l.maxZ, pos, p.yaw(), p.scale());
-            placed += fillLightBox(level, box);
+            placed += fillLightBox(level, box, l.level);
         }
         return placed;
     }
@@ -555,7 +555,7 @@ public class PolarisObjuilderServerEvents {
     }
 
     /** 填充一个世界 AABB 内的光源方块（上限 512 格防呆；只填空气） */
-    private static int fillLightBox(ServerLevel level, AABB box) {
+    private static int fillLightBox(ServerLevel level, AABB box, int lightLevel) {
         int placed = 0;
         for (BlockPos bp : BlockPos.betweenClosed(
                 BlockPos.containing(box.minX, box.minY, box.minZ),
@@ -566,8 +566,9 @@ public class PolarisObjuilderServerEvents {
             }
             BlockState st = level.getBlockState(bp);
             if (st.is(Blocks.LIGHT) || !st.isAir()) continue;
+            int lv = lightLevel > 0 ? Math.max(1, Math.min(15, lightLevel)) : LIGHT_BLOCK_LEVEL;
             level.setBlock(bp, Blocks.LIGHT.defaultBlockState()
-                    .setValue(LightBlock.LEVEL, LIGHT_BLOCK_LEVEL), 3);
+                    .setValue(LightBlock.LEVEL, lv), 3);
             placed++;
         }
         return placed;
