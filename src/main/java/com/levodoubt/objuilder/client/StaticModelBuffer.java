@@ -94,10 +94,18 @@ public final class StaticModelBuffer {
                         .apply(noTex ? DomainModelCache.defaultTexture() : matTex);
                 shader = GameRenderer::getRendertypeEntityCutoutShader;
             } else {
-                rt = (doubleSided
-                        ? (translucent ? CustomRenderTypes.ENTITY_TRIANGLES_TRANSLUCENT_DOUBLE_SIDED : CustomRenderTypes.ENTITY_TRIANGLES_DOUBLE_SIDED)
-                        : (translucent ? CustomRenderTypes.ENTITY_TRIANGLES_TRANSLUCENT : CustomRenderTypes.ENTITY_TRIANGLES)).apply(
-                        noTex ? DomainModelCache.defaultTexture() : matTex);
+                // 贴图驱动半透明（BLEND + base 图 alpha）必须写深度（2.1.15）：否则玻璃后面的不透明面
+                // （自发光灯泡等）会通过深度测试被画到玻璃之上 —— 实测"光斑浮在灯罩/其它模型之上"。
+                // 标量 alpha 半透明保持 2.1.10 的"只写颜色"设计（避免遮挡光影对后方光照的计算）。
+                boolean texTranslucent = DomainModelCache.isTranslucent(modelId, matId);
+                final java.util.function.Function<ResourceLocation, RenderType> trans = doubleSided
+                        ? (texTranslucent ? CustomRenderTypes.ENTITY_TRIANGLES_TRANSLUCENT_DOUBLE_SIDED_DEPTH
+                                          : CustomRenderTypes.ENTITY_TRIANGLES_TRANSLUCENT_DOUBLE_SIDED)
+                        : (texTranslucent ? CustomRenderTypes.ENTITY_TRIANGLES_TRANSLUCENT_DEPTH
+                                          : CustomRenderTypes.ENTITY_TRIANGLES_TRANSLUCENT);
+                rt = (translucent ? trans
+                        : (doubleSided ? CustomRenderTypes.ENTITY_TRIANGLES_DOUBLE_SIDED : CustomRenderTypes.ENTITY_TRIANGLES))
+                        .apply(noTex ? DomainModelCache.defaultTexture() : matTex);
                 shader = translucent
                         ? GameRenderer::getRendertypeEntityTranslucentShader
                         : GameRenderer::getRendertypeEntitySolidShader;
