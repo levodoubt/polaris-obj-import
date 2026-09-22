@@ -21,11 +21,11 @@ import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
- * 交互盒拾取（2.1.17 / 2.1.18）：右键我们自己的碰撞盒时，用「宽容射线 + 精确命中优先 / 最具体盒优先」自己判定一次；
- * **判不到时也要给出原因**（actionbar + 日志），便于现场定位"点了没反应"。
+ * 交互盒拾取（2.1.17~2.1.19）：右键我们自己的碰撞盒时，用「宽容射线 + 精确命中优先 / 最具体盒优先」判定一次；
+ * **判不到时按四类原因分别反馈**（actionbar + 日志），便于现场定位"点了没反应"。
  *
- * <p>规则见 v0.3.8 注释：膨胀 {@code min(0.6, 0.25+size*0.35)}；命中**未膨胀**盒者取体积最小，
- * 否则取最近膨胀命中。命中即发 {@link ColliderClickPayload}（服务端复用 {@code ColliderEntity.interact}）。
+ * <p>未命中的四类原因：① 部件已被消耗/禁用；② 部件无 @动画/$命令（不可交互）；③ 该次摆放没有碰撞盒（附近没有交互盒）；
+ * ④ 真的没瞄中（射线离盒面 N 格）。旧文案把②③④都写成"偏移"，会误导。
  */
 @EventBusSubscriber(modid = PolarisObjuilder.MODID, value = Dist.CLIENT, bus = EventBusSubscriber.Bus.GAME)
 public final class ColliderClickAssist {
@@ -34,9 +34,9 @@ public final class ColliderClickAssist {
     /** 膨胀下限/上限（格） */
     private static final double MIN_INFLATE = 0.25;
     private static final double MAX_INFLATE = 0.6;
-    /** 未命中时的"打扰半径"（格）：准星离某个可交互盒比它更近才提示，避免右键箱子也弹提示 */
+    /** 未命中时的"打扰半径"（格）：准星离某个交互盒比它更近才提示，避免右键箱子也弹提示 */
     private static final double MISS_HINT_OFFSET = 0.8;
-    /** 探测用的膨胀档位（找"离准星多近"） */
+    /** 探测"离准星多近"用的膨胀档位 */
     private static final double[] MISS_PROBE = {0.05, 0.1, 0.2, 0.35, 0.55, 0.8};
 
     private static long lastLogMs = 0L;
@@ -68,35 +68,57 @@ public final class ColliderClickAssist {
         }
     }
 
-    /**
-     * 没命中时的原因反馈：若准星附近（{@value #MISS_HINT_OFFSET} 格内）存在可交互盒，
-     * 说明"玩家在瞄它但没点中" → actionbar + 日志给出偏离量与部件信息（节流 1 秒）。
-     */
+    /** 未命中 → 按四类原因反馈（仅当准星附近确实有我们的交互盒时才提示/记日志，避免刷屏） */
     private static void reportMiss(Minecraft mc) {
         Entity cam = mc.getCameraEntity() != null ? mc.getCameraEntity() : mc.player;
         Vec3 eye = cam.getEyePosition(1.0f);
         Vec3 end = eye.add(cam.getViewVector(1.0f).scale(REACH));
-        List<ColliderEntity> near = mc.level.getEntitiesOfClass(ColliderEntity.class,
-                new AABB(eye, end).inflate(MAX_INFLATE + 0.5), ce -> ce.isPickable());
-        ColliderEntity closest = null;
-        double closestOff = Double.MAX_VALUE;
-        for (ColliderEntity ce : near) {
-            double off = rayOffset(eye, end, ce.getBoundingBox());
-            if (off < closestOff) {
-                closestOff = off;
-                closest = ce;
+        List<ColliderEntity> all = mc.level.getEntitiesOfClass(ColliderEntity.class,
+                new AABB(eye, end).inflate(MAX_INFLATE + 0.5), ce -> true);
+
+        ColliderEntity nearest = null;
+        double nearestOff = Double.MAX_VALUE;
+        int nearCount = 0;
+        StringBuilder dump = new StringBuilder();
+        for (ColliderEntity ce : all) {
+            AABB bx = ce.getBoundingBox();
+            double off = rayOffset(eye, end, bx);
+            if (off > MISS_HINT_OFFSET) continue;
+            nearCount++;
+            dump.append(String.format(" | '%s' 摆放#%d 实体#%d %s off=%.2f 盒=[%.3f,%.3f,%.3f→%.3f,%.3f,%.3f]",
+                    ce.getPartName(), ce.getPlacementId(), ce.getId(),
+                    ce.isPickable() ? "可交互" : (ce.isPickEnabled() ? "无动画/命令" : "已消耗"),
+                    off, bx.minX, bx.minY, bx.minZ, bx.maxX, bx.maxY, bx.maxZ));
+            if (off < nearestOff) {
+                nearestOff = off;
+                nearest = ce;
             }
         }
-        if (closest == null || closestOff > MISS_HINT_OFFSET) return;
+        if (nearest == null) return;   // 附近没有我们的盒 → 静默（右键箱子/门不受打扰）
+
         long now = Util.getMillis();
         if (now - lastMissMs < 1000L) return;
         lastMissMs = now;
-        String part = closest.getPartName();
-        int pid = closest.getPlacementId();
-        mc.player.displayClientMessage(Component.literal(String.format(
-                "§e[Objuilder] 未触发：准星偏离部件 '%s' 约 %.2f 格（摆放 #%d）", part, closestOff, pid)), true);
-        PolarisObjuilder.LOGGER.info("[Objuilder][交互拾取] 未命中：最近可交互部件 '{}'（摆放 #{}，实体 #{}）偏离准星 {} 格",
-                part, pid, closest.getId(), String.format("%.2f", closestOff));
+
+        String part = nearest.getPartName();
+        int pid = nearest.getPlacementId();
+        String msg;
+        if (!nearest.isPickEnabled()) {
+            msg = String.format("§c[Objuilder] 触发失败：部件 '%s' 已被消耗/禁用（摆放 #%d）", part, pid);
+        } else if (!nearest.isPickable()) {
+            msg = String.format("§c[Objuilder] 触发失败：部件 '%s' 不可交互（无 @动画/$命令，摆放 #%d）", part, pid);
+        } else {
+            msg = String.format("§e[Objuilder] 未触发：准星离部件 '%s' 约 %.2f 格（摆放 #%d）", part, nearestOff, pid);
+        }
+        mc.player.displayClientMessage(Component.literal(msg), true);
+        PolarisObjuilder.LOGGER.info(
+                "[Objuilder][交互拾取] 未命中：eye=[{},{},{}] 视线终点=[{},{},{}] 附近交互盒 {} 个:{}",
+                fmt(eye.x), fmt(eye.y), fmt(eye.z), fmt(end.x), fmt(end.y), fmt(end.z),
+                nearCount, dump.length() == 0 ? " 无" : dump);
+    }
+
+    private static String fmt(double v) {
+        return String.format("%.3f", v);
     }
 
     /** 射线到盒面的近似距离（用若干膨胀档位探测；超过最大档返回 999） */
@@ -107,7 +129,7 @@ public final class ColliderClickAssist {
         return 999.0;
     }
 
-    /** 宽容射线拾取：精确命中优先（取最具体盒），否则取最近膨胀命中 */
+    /** 宽容射线拾取：精确命中优先（取最具体盒），否则取最近膨胀命中；只考虑 pickable 的盒 */
     private static ColliderEntity pick(Minecraft mc) {
         Entity cam = mc.getCameraEntity() != null ? mc.getCameraEntity() : mc.player;
         Vec3 eye = cam.getEyePosition(1.0f);

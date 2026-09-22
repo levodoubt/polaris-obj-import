@@ -491,16 +491,24 @@ public class PolarisObjuilderServerEvents {
         List<GlbModel.ColliderDef> colliders = parseColliders(p.ref());
         if (colliders.isEmpty()) return uuids;
         Vec3 pos = new Vec3(p.x(), p.y(), p.z());
+        StringBuilder sb = new StringBuilder();
         for (GlbModel.ColliderDef c : colliders) {
             // 事项 4：按「摆放 id + 动画名」精确判断该动态盒是否已开（多同名门独立）
             if (c.isDynamic() && GlbInteraction.isOpen(p.id(), c.animBinding)) continue;
             ColliderEntity ce = new ColliderEntity(PolarisObjuilder.COLLIDER_ENTITY.get(), level);
             ce.setPlacementId(p.id());
-            ce.setBox(worldBox(c.minX, c.minY, c.minZ, c.maxX, c.maxY, c.maxZ, pos, p.yaw(), p.scale()),
-                    c.name, c.animBinding, c.cmdKey, c.collides);
+            AABB box = worldBox(c.minX, c.minY, c.minZ, c.maxX, c.maxY, c.maxZ, pos, p.yaw(), p.scale());
+            ce.setBox(box, c.name, c.animBinding, c.cmdKey, c.collides);
             level.addFreshEntity(ce);
             uuids.add(ce.getUUID());
+            sb.append(String.format(" | '%s'%s%s 盒=[%.3f,%.3f,%.3f→%.3f,%.3f,%.3f] 挡人=%b",
+                    c.name,
+                    c.isDynamic() ? "@" + c.animBinding : "",
+                    c.hasCommand() ? "$" + c.cmdKey : "",
+                    box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ, c.collides));
         }
+        PolarisObjuilder.LOGGER.info("[Objuilder] 摆放 #{} 生成碰撞体 {} 个（scale={} yaw={} pos=({},{},{})）:{}",
+                p.id(), uuids.size(), p.scale(), p.yaw(), p.x(), p.y(), p.z(), sb);
         return uuids;
     }
 
