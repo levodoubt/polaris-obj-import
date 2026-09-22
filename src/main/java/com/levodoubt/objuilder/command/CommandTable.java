@@ -264,10 +264,18 @@ public final class CommandTable {
      * @param partName    部件名（%part%），可 null
      * @param placementId 摆放 id（%placement%），-1 = 未知
      * @param center      碰撞盒世界中心（%x%/%y%/%z%），可 null
+     * @param partialOut  可选出参：把"中止前已经生效的返回值合计"写回 {@code partialOut[0]}
+     *                    （调用方据此判断"是否已产生副作用"，避免回滚导致重复发放，见 v0.4.5）
      * @return 各条命令返回值之和（&gt;0 = 整体生效；任一条未生效 → 立即中止后续命令并返回 0；-1 = 异常）；
      *         供 {@code consume="result"} 判定
      */
     public static int run(ServerPlayer player, String key, String partName, int placementId, Vec3 center) {
+        return run(player, key, partName, placementId, center, null);
+    }
+
+    /** 带"已生效合计"出参的重载（见 {@link #run(ServerPlayer, String, String, int, Vec3)}） */
+    public static int run(ServerPlayer player, String key, String partName, int placementId, Vec3 center,
+                          int[] partialOut) {
         Entry entry = get(key);
         if (entry == null) {
             ObjDebug.warn("[Objuilder] 命令键 '{}' 不存在，未执行", key);
@@ -298,6 +306,7 @@ public final class CommandTable {
                 // performCommand 内部已吞掉大部分异常，这里是最后兜底（防模组自身崩服）
                 ObjDebug.warn("[Objuilder] 命令键 '{}' 第 {}/{} 条执行异常：{}（命令：'{}'）",
                         key, i + 1, cmds.size(), ex.toString(), command);
+                if (partialOut != null) partialOut[0] = total;
                 return -1;
             }
             if (!capturedSuccess[0]) {
@@ -306,6 +315,7 @@ public final class CommandTable {
                 ObjDebug.warn(
                         "[Objuilder] 命令键 '{}' 第 {}/{} 条未生效 → 中止后续 {} 条（命令：'{}'；部件 '{}'，摆放 #{}）",
                         key, i + 1, cmds.size(), cmds.size() - i - 1, command, partName, placementId);
+                if (partialOut != null) partialOut[0] = total;
                 return 0;
             }
             total += capturedResult[0];

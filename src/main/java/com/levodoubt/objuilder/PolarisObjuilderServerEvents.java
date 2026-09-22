@@ -4,7 +4,9 @@ import com.levodoubt.objuilder.debug.ObjDebug;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import com.levodoubt.objuilder.animation.GlbAnimationController;
@@ -229,7 +231,21 @@ public class PolarisObjuilderServerEvents {
         return 1;
     }
 
-    /** 服务端启动完成：加载命令映射表 + 按 SavedData 记录重新 spawn 摆放实体 + 碰撞体（持久化恢复，重进游戏模型自动出现） */
+    /**
+     * 服务端启动完成：加载命令映射表 + 校核摆放实体/碰撞体。
+     *
+     * <p>⚠️ 这里**不再**按 SavedData 直接补生成实体（v0.4.5 根因修复）。原因：{@code ServerStartedEvent}
+     * 触发时世界区块尚未加载，{@code level.getEntity(uuid)} 对已存在的实体一律返回 null → 旧逻辑把
+     * "查不到"当成"丢了"，于是**每次进世界都重复 spawn 一套实体**，并把新 UUID 写回 SavedData：
+     * <ul>
+     *   <li>旧实体成了**孤儿**——模型还在、碰撞盒还能点（pickEnabled 不持久化，读档即恢复可点）</li>
+     *   <li>{@code /objremove} 只删得掉记录里的新 UUID → 摆放记录没了、旧实体还在</li>
+     *   <li>再点一次：命令链里 {@code objremove %placement%} 找不到记录 → 返回 0 → 判为"未生效"
+     *       → 触发回滚（重新可点 + 动画复位）→ **可以无限刷物品**（实测：存档里 19 个实体里 14 个是孤儿）</li>
+     * </ul>
+     * 现在改为 {@link #reconcile}：以「记录 ↔ 世界里已加载实体」互相校核，只有区块已加载时才动手，
+     * 既能清理孤儿/重复，也不会误判"丢失"。
+     */
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event) {
         MinecraftServer server = event.getServer();
@@ -246,57 +262,176 @@ public class PolarisObjuilderServerEvents {
         }
         // 子工程 8：命令映射表（commands.json）——$ 命令键的键值对在这里进内存
         CommandTable.load(server);
+        // 此时区块多未加载 → 本轮基本只做"孤儿/重复清理"；补齐留给玩家登录 + 周期校核（见 onServerTick）
+        reconcile(server, "服务端启动");
+    }
+
+    /**
+     * 玩家登录后校核一次：此时玩家所在区块已加载，能真正判断"模型丢了没有"。
+     */
+    @SubscribeEvent
+    public static void onPlayerLoggedIn(net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent event) {
+        MinecraftServer server = event.getEntity().getServer();
+        if (server != null) reconcile(server, "玩家登录");
+    }
+
+    /** 周期校核节流（tick 计）：每 5 秒一次，保证远处区块加载后摆放也能自动补齐 */
+    private static int reconcileTimer = 0;
+
+    @SubscribeEvent
+    public static void onServerTick(net.neoforged.neoforge.event.tick.ServerTickEvent.Post event) {
+        if (++reconcileTimer < 100) return;
+        reconcileTimer = 0;
+        reconcile(event.getServer(), "周期校核");
+    }
+
+    /**
+     * 摆放实体/碰撞体校核（v0.4.5）：以 SavedData 记录为准，把世界里的模组实体校核成"每条记录恰好一套"。
+     *
+     * <p>四件事，全部幂等：
+     * <ol>
+     *   <li><b>孤儿清理</b>：实体的摆放 id 在 SavedData 里查不到 → discard（修掉历史坏档：摆放已删、模型还在）</li>
+     *   <li><b>重复清理</b>：记录仍在，但该实体不是记录里指定的 UUID（同一摆放的另一套副本）→ discard</li>
+     *   <li><b>UUID 自愈</b>：把留下的实体 UUID 回填记录（老档记录与新实体失配时，删除操作才定位得到）</li>
+     *   <li><b>缺失补齐</b>：记录存在但本体/碰撞体不在世界里，且**该位置区块已加载**（否则无法判断）→ 重新生成</li>
+     * </ol>
+     */
+    private static void reconcile(MinecraftServer server, String why) {
         ServerLevel overworld = server.overworld();
         PlacementSavedData data = PlacementSavedData.get(overworld);
-        int restored = 0;
-        for (Placement p : data.all()) {
-            // 已有对应实体（uuid 仍在）→ 补齐 placementId（旧存档/升级前摆放）后跳过；否则重建
-            Entity existing = p.entityUuid() != null ? overworld.getEntity(p.entityUuid()) : null;
-            if (existing instanceof DomainEntity de) {
-                de.setPlacementId(p.id());
-                continue;
+
+        // 一次遍历收集本模组已加载实体（只有已加载区块的实体在 getAllEntities 里）
+        List<Entity> ours = new ArrayList<>();
+        for (ServerLevel lvl : server.getAllLevels()) {
+            for (Entity e : lvl.getAllEntities()) {
+                if (e instanceof DomainEntity || e instanceof ColliderEntity) ours.add(e);
             }
-            DomainEntity e = new DomainEntity(PolarisObjuilder.DOMAIN_ENTITY.get(), overworld);
-            e.setPos(p.x(), p.y(), p.z());
-            e.setYRot(p.yaw());
-            e.setModelRef(p.ref());
-            e.setModelScale(p.scale());
-            e.setPlacementId(p.id());
-            overworld.addFreshEntity(e);
-            data.put(new Placement(p.id(), p.ref(), p.x(), p.y(), p.z(), p.yaw(), p.scale(),
-                    e.getUUID(), p.colliderUuids())); // 回填新实体 UUID
-            restored++;
         }
-        // 碰撞体补齐 + 摆放 id 回填：父实体存在但碰撞体缺失（旧存档无记录 / 已删除）→ 重新生成；
-        // 已存在的碰撞体也按 SavedData 回填 placementId（子工程 8 复检修复：老存档的碰撞体没有该字段，
-        // 不补会让命令里的 %placement% 取到 -1、/objremove %placement% 失效）
-        int restoredColliders = 0;
-        int backfilled = 0;
+
+        // ---------- 0：按 UUID 认领（老档实体可能没有/错了 placementId：-1、0）----------
+        // 必须先认领再清理：否则"uuid 属于某记录、但实体 pid 是 -1"的老档实体会被当成孤儿删掉。
+        int adopted = 0;
+        for (Entity e : ours) {
+            for (Placement p : data.all()) {
+                if (!e.getUUID().equals(p.entityUuid()) && !p.colliderUuids().contains(e.getUUID())) continue;
+                if (placementIdOf(e) != p.id()) {
+                    setPlacementId(e, p.id());
+                    adopted++;
+                }
+                break;
+            }
+        }
+
+        // 按摆放 id 归堆（认领之后）+ 记录里出现过的全部 UUID
+        Map<Integer, List<Entity>> byPid = new LinkedHashMap<>();
+        for (Entity e : ours) byPid.computeIfAbsent(placementIdOf(e), k -> new ArrayList<>()).add(e);
+        java.util.Set<UUID> recordedUuids = new java.util.HashSet<>();
         for (Placement p : data.all()) {
-            Entity parent = p.entityUuid() != null ? overworld.getEntity(p.entityUuid()) : null;
-            if (parent == null) continue; // 父实体都还没恢复（理论上不会发生）
-            List<UUID> alive = new ArrayList<>();
-            for (UUID cu : p.colliderUuids()) {
-                Entity ce = cu != null ? overworld.getEntity(cu) : null;
-                if (ce == null) continue;
-                alive.add(cu);
-                if (ce instanceof ColliderEntity collider && collider.getPlacementId() != p.id()) {
-                    collider.setPlacementId(p.id());
-                    backfilled++;
+            if (p.entityUuid() != null) recordedUuids.add(p.entityUuid());
+            recordedUuids.addAll(p.colliderUuids());
+        }
+
+        // ---------- 1/2：清理孤儿（记录已删）与重复副本（同摆放已有代表实体）----------
+        int orphans = 0, dups = 0;
+        for (Map.Entry<Integer, List<Entity>> en : byPid.entrySet()) {
+            Placement rec = data.get(en.getKey());
+            for (Entity e : en.getValue()) {
+                if (rec != null && isPrimary(rec, e)) continue;
+                boolean orphan = rec == null && !recordedUuids.contains(e.getUUID());
+                if (rec == null && !orphan) continue;   // UUID 属于某记录（理论上已被认领）→ 保守不动
+                if (orphan) orphans++; else dups++;
+                ObjDebug.warn("[Objuilder][校核/{}] 移除{}实体 {} 摆放#{} 部件 '{}'（{}）",
+                        why, orphan ? "孤儿" : "重复", e.getType().toShortString(), en.getKey(),
+                        e instanceof ColliderEntity ce ? ce.getPartName() : "—",
+                        orphan ? "SavedData 已无该摆放" : "同摆放已有代表实体");
+                e.discard();
+            }
+        }
+
+        // ---------- 3/4：按记录补齐 + UUID 自愈 ----------
+        int spawnDomain = 0, spawnCollider = 0, repaired = 0;
+        for (Placement p : data.all()) {
+            List<Entity> mine = new ArrayList<>();
+            for (Entity e : byPid.getOrDefault(p.id(), List.of())) {
+                if (!e.isRemoved() && isPrimary(p, e)) mine.add(e);
+            }
+            UUID domainUuid = null;
+            List<UUID> colliderUuids = new ArrayList<>();
+            java.util.Set<String> existingParts = new java.util.HashSet<>();
+            for (Entity e : mine) {
+                if (e instanceof DomainEntity de) {
+                    if (domainUuid == null) domainUuid = de.getUUID();
+                } else if (e instanceof ColliderEntity ce) {
+                    colliderUuids.add(ce.getUUID());
+                    if (ce.getPartName() != null) existingParts.add(ce.getPartName());
                 }
             }
-            if (alive.size() == p.colliderUuids().size()) continue;
-            List<UUID> spawned = spawnColliders(overworld, p);
-            List<UUID> merged = new ArrayList<>(alive);
-            merged.addAll(spawned);
-            data.put(new Placement(p.id(), p.ref(), p.x(), p.y(), p.z(), p.yaw(), p.scale(),
-                    p.entityUuid(), merged));
-            restoredColliders += spawned.size();
+            // 缺碰撞盒的判据：记录里写了 UUID（正常情况）→ 比数量；记录为空且世界里也没有 → 才解析模型确认
+            boolean needColliders = p.colliderUuids().isEmpty() && colliderUuids.isEmpty()
+                    ? !parseColliders(p.ref()).isEmpty()
+                    : colliderUuids.size() < p.colliderUuids().size();
+
+            // 位置区块未加载 → 无法判断实体是否真的丢了，跳过补齐（等加载后下一轮再处理）
+            boolean loaded = overworld.isLoaded(BlockPos.containing(p.x(), p.y(), p.z()));
+            if (loaded && (domainUuid == null || needColliders)) {
+                if (domainUuid == null) {
+                    DomainEntity e = new DomainEntity(PolarisObjuilder.DOMAIN_ENTITY.get(), overworld);
+                    e.setPos(p.x(), p.y(), p.z());
+                    e.setYRot(p.yaw());
+                    e.setModelRef(p.ref());
+                    e.setModelScale(p.scale());
+                    e.setPlacementId(p.id());
+                    overworld.addFreshEntity(e);
+                    domainUuid = e.getUUID();
+                    spawnDomain++;
+                }
+                if (needColliders) {
+                    // 按部件名补缺口（已有部件的盒不重建 → 不会出现"同一部件两个盒、点一次触发两次"）
+                    List<UUID> spawned = spawnColliders(overworld, p, existingParts);
+                    colliderUuids.addAll(spawned);
+                    spawnCollider += spawned.size();
+                }
+            }
+            if (!java.util.Objects.equals(domainUuid, p.entityUuid())
+                    || !colliderUuids.equals(p.colliderUuids())) {
+                data.put(new Placement(p.id(), p.ref(), p.x(), p.y(), p.z(), p.yaw(), p.scale(),
+                        domainUuid, colliderUuids));
+                repaired++;
+            }
         }
-        if (restored > 0 || restoredColliders > 0 || backfilled > 0) {
-            ObjDebug.info("[Objuilder] 已恢复 {} 个摆放模型、{} 个碰撞体（SavedData）；回填 {} 个碰撞体摆放 id",
-                    restored, restoredColliders, backfilled);
+        if (adopted + orphans + dups + spawnDomain + spawnCollider + repaired > 0) {
+            ObjDebug.info("[Objuilder][校核/{}] 认领 {} · 孤儿清理 {} · 重复清理 {} · 补生成本体 {} · 补生成碰撞体 {} · UUID 修复 {} 条",
+                    why, adopted, orphans, dups, spawnDomain, spawnCollider, repaired);
         }
+    }
+
+    /** 设置模组实体的摆放 id（DomainEntity / ColliderEntity 同签名） */
+    private static void setPlacementId(Entity e, int id) {
+        if (e instanceof DomainEntity de) de.setPlacementId(id);
+        else if (e instanceof ColliderEntity ce) ce.setPlacementId(id);
+    }
+
+    /** 实体的摆放 id（非本模组实体 → -1） */
+    private static int placementIdOf(Entity e) {
+        if (e instanceof DomainEntity de) return de.getPlacementId();
+        if (e instanceof ColliderEntity ce) return ce.getPlacementId();
+        return -1;
+    }
+
+    /**
+     * 该实体是否为记录里指定的"代表实体"：
+     * 记录还没写 UUID（老档/刚生成）→ 一律接受（随后由 reconcile 回填自愈）；
+     * 否则只有 UUID 在记录里才算代表（同摆放的另一套副本会被判为重复）。
+     */
+    private static boolean isPrimary(Placement rec, Entity e) {
+        if (e instanceof DomainEntity) {
+            return rec.entityUuid() == null || rec.entityUuid().equals(e.getUUID());
+        }
+        if (e instanceof ColliderEntity) {
+            if (rec.colliderUuids().isEmpty()) return true;
+            return rec.colliderUuids().contains(e.getUUID());
+        }
+        return false;
     }
 
     // ===================== glbanim（子工程 3）+ 碰撞状态联动（子工程 6 M2） =====================
@@ -406,26 +541,46 @@ public class PolarisObjuilderServerEvents {
         return 1;
     }
 
-    /** 移除指定摆放：删父实体 + 连带删碰撞体（跨维度按 UUID 定位）+ 删 SavedData 记录；广播客户端释放该摆放缓存 */
+    /**
+     * 移除指定摆放：先删记录 → 再删实体（按 UUID + **按摆放 id** 双路定位）→ 广播客户端释放缓存。
+     *
+     * <p>v0.4.5 两处加固（用户实测"可以无限刷物品"的根因之一）：
+     * <ol>
+     *   <li><b>幂等</b>：记录已不存在时返回 <b>1</b>（视为"已是移除状态"），而不是返回 0。
+     *       以前返回 0 会让 {@code cmds} 链中途中止 → {@code consume="result"} 判为"未生效"
+     *       → 触发回滚（碰撞盒重新可点 + 动画复位）→ 玩家已经拿到的物品可以反复拿。</li>
+     *   <li><b>按摆放 id 兜底</b>：历史坏档里存在"记录已删、实体还在"的孤儿实体（UUID 不在记录里），
+     *       只按 UUID 删不掉它们；这里额外按 placementId 扫已加载实体，一并清掉。</li>
+     * </ol>
+     * 先删记录再删实体：即使实体此刻在未加载的区块里（删不掉），它加载后也会被
+     * {@link #reconcile} 当孤儿清掉。
+     */
     private static int objremove(CommandSourceStack source, int id) {
         PlacementSavedData data = PlacementSavedData.get(source.getServer().overworld());
         Placement p = data.get(id);
-        if (p == null) {
-            source.sendFailure(Component.literal("未找到摆放 #" + id));
-            return 0;
-        }
-        discardEntity(source.getServer(), p.entityUuid());
-        for (UUID cu : p.colliderUuids()) {
-            discardEntity(source.getServer(), cu);
-        }
+        boolean hadRecord = p != null;
         data.remove(id);
+        int killed = discardByPlacementId(source.getServer(), id);
+        if (p != null) {
+            discardEntity(source.getServer(), p.entityUuid());
+            for (UUID cu : p.colliderUuids()) {
+                discardEntity(source.getServer(), cu);
+            }
+        }
         // 跨存档/跨重摆状态残留修复：摆放 id 会被新摆放复用，移除时清掉它在 OPEN_PARTS/CONSUMED 里的键
         int stale = GlbInteraction.clearPlacement(id);
         if (stale > 0) {
             ObjDebug.info("[Objuilder] 摆放 #{} 移除 → 清理交互状态 {} 条（开状态/已消耗）", id, stale);
         }
-        // 事项 1/4：广播客户端释放该摆放独立的几何/纹理缓存
-        PacketDistributor.sendToAllPlayers(new CacheReleasePayload(p.id()));
+        // 事项 1/4：广播客户端释放该摆放独立的几何/纹理缓存（记录是否还在都要广播，否则客户端会留着旧模型）
+        PacketDistributor.sendToAllPlayers(new CacheReleasePayload(id));
+        if (!hadRecord) {
+            // 幂等分支：仍然算成功，避免调用方（cmds 链）中止而回滚成"可重复交互"
+            ObjDebug.warn("[Objuilder] /objremove {}：SavedData 已无该记录（幂等返回成功；按摆放 id 清掉实体 {} 个）", id, killed);
+            ObjDebug.chat(source, () -> Component.literal(
+                    "§a[Objuilder] 摆放 #" + id + " 已是移除状态（幂等；清理残留实体 " + killed + " 个）"), true);
+            return 1;
+        }
         ObjDebug.chat(source, () -> Component.literal("§a[Objuilder] 已移除摆放 #" + id), true);
         return 1;
     }
@@ -440,6 +595,7 @@ public class PolarisObjuilderServerEvents {
             for (UUID cu : p.colliderUuids()) {
                 discardEntity(source.getServer(), cu);
             }
+            discardByPlacementId(source.getServer(), p.id());   // 老档孤儿实体兜底（UUID 不在记录里的那套）
             // 同上：清空摆放时一并清掉其交互状态残留（重摆同 id 不会继承"已开/已消耗"）
             GlbInteraction.clearPlacement(p.id());
         }
@@ -549,6 +705,27 @@ public class PolarisObjuilderServerEvents {
         return false;
     }
 
+    /**
+     * 跨所有维度按**摆放 id** 移除已加载的模组实体，返回移除数量。
+     *
+     * <p>为什么需要它：历史坏档里存在"SavedData 记录已删、实体还在"的孤儿实体（UUID 不在任何记录里），
+     * 只按 UUID 删不掉 → 模型不消失、碰撞盒还能点 → 配合命令链中止/回滚会变成无限刷物品。
+     * 这里按 placementId 兜底扫描（{@code getAllEntities()} 只含已加载区块的实体；
+     * 未加载的会在区块加载后被 {@link #reconcile} 当孤儿清掉）。
+     */
+    private static int discardByPlacementId(MinecraftServer server, int placementId) {
+        if (placementId < 0) return 0;
+        int killed = 0;
+        for (ServerLevel lvl : server.getAllLevels()) {
+            for (Entity e : lvl.getAllEntities()) {
+                if (placementIdOf(e) != placementId) continue;
+                e.discard();
+                killed++;
+            }
+        }
+        return killed;
+    }
+
     // ===================== 子工程 6 · 碰撞盒辅助 =====================
 
     /**
@@ -610,6 +787,14 @@ public class PolarisObjuilderServerEvents {
      * 返回生成的碰撞体 UUID 列表。
      */
     private static List<UUID> spawnColliders(ServerLevel level, Placement p) {
+        return spawnColliders(level, p, java.util.Set.of());
+    }
+
+    /**
+     * 同 {@link #spawnColliders(ServerLevel, Placement)}，但跳过 {@code skipParts} 里已存在的部件名。
+     * 供 {@link #reconcile} 补"缺的那几个"碰撞盒时使用（避免整份重生成 → 同一部件两个盒 → 点一次触发两次）。
+     */
+    private static List<UUID> spawnColliders(ServerLevel level, Placement p, java.util.Set<String> skipParts) {
         List<UUID> uuids = new ArrayList<>();
         List<GlbModel.ColliderDef> colliders = parseColliders(p.ref());
         if (colliders.isEmpty()) return uuids;
@@ -617,6 +802,7 @@ public class PolarisObjuilderServerEvents {
         StringBuilder sb = new StringBuilder();
         int skipped = 0;
         for (GlbModel.ColliderDef c : colliders) {
+            if (skipParts.contains(c.name)) continue;   // 该部件已有碰撞盒（补生成时用）
             // 事项 4：按「摆放 id + 动画名」精确判断该动态盒是否已开（多同名门独立）
             if (c.isDynamic() && GlbInteraction.isOpen(p.id(), c.animBinding)) {
                 skipped++;

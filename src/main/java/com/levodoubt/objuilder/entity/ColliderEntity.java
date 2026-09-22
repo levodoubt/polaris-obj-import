@@ -376,17 +376,28 @@ public class ColliderEntity extends Entity {
         }
         // 3) 命令（服务端、以玩家身份、带占位符）
         if (cmd != null) {
-            int result = CommandTable.run(serverPlayer, cmd, getPartName(), getPlacementId(), this.box.getCenter());
+            final int[] partial = {0};
+            int result = CommandTable.run(serverPlayer, cmd, getPartName(), getPlacementId(),
+                    this.box.getCenter(), partial);
             // "未生效"判据：consume="result" 且返回值 <= 0（含 cmds 多命令"任一条失败即中止"返回 0）
             boolean ineffective = CommandTable.mode(cmd) == CommandTable.Consume.RESULT && result <= 0;
-            ObjDebug.info("[Objuilder][交互] 部件 '{}' 摆放 #{} 命令 {} → 返回 {}（{}）",
-                    getPartName(), getPlacementId(), cmd, result, ineffective ? "未生效" : "已生效");
+            // 已经产生副作用（前面的命令已生效，例如 give 发出去了）→ **禁止回滚**
+            // （v0.4.5 修复"无限刷物品"：以前哪怕第二条命令失败也会回滚成"可再点"，玩家就能反复领同一份奖励）
+            boolean alreadyApplied = ineffective && partial[0] > 0;
+            ObjDebug.info("[Objuilder][交互] 部件 '{}' 摆放 #{} 命令 {} → 返回 {}（{}；前序已生效合计 {}）",
+                    getPartName(), getPlacementId(), cmd, result,
+                    ineffective ? (alreadyApplied ? "未完全生效但已产生效果" : "未生效") : "已生效", partial[0]);
             if (ineffective) {
                 // 加固 B：失败必须给玩家可见反馈（否则现场只能翻日志）
                 String why = getPartName() == null ? cmd : cmd + "（部件 " + getPartName() + "）";
-                ObjDebug.hint(player, Component.literal(
-                        "§c[Objuilder] 命令未生效，本次交互已忽略：" + why));
-                if (consume) {
+                if (alreadyApplied) {
+                    ObjDebug.hint(player, Component.literal(
+                            "§e[Objuilder] 命令未完全生效，但前面的命令已生效 → 不回滚（避免重复发放）：" + why));
+                } else {
+                    ObjDebug.hint(player, Component.literal(
+                            "§c[Objuilder] 命令未生效，本次交互已忽略：" + why));
+                }
+                if (consume && !alreadyApplied) {
                     // 加固 A：连动画 toggle 一起回滚到点击前状态（否则"动画已播/状态=开 但盒还活着"，
                     // 玩家再点一下会变成 toggle RESET —— 实测表现为"枪掉下来又飞回去"）
                     if (anim != null) {
