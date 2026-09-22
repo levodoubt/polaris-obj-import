@@ -125,31 +125,49 @@ public class PolarisObjuilderServerEvents {
                         .then(Commands.argument("key", StringArgumentType.word())
                                 .executes(ctx -> objcmdTest(ctx.getSource(),
                                         StringArgumentType.getString(ctx, "key"))))));
-        // /objdebug（v0.4.3）：调试输出总开关——false 隐藏本模组一切调试输出（诊断日志 + 屏上诊断提示）
+        // /objdebug（v0.4.3，v0.4.4 扩展）：调试输出总开关——false 隐藏本模组一切调试输出
+        // （诊断日志 + 屏上诊断提示 + 聊天框 [Objuilder]/[Glb] 前缀消息）
         dispatcher.register(Commands.literal("objdebug")
                 .executes(ctx -> objdebugStatus(ctx.getSource()))
                 .then(Commands.literal("true").executes(ctx -> objdebugSet(ctx.getSource(), true)))
                 .then(Commands.literal("on").executes(ctx -> objdebugSet(ctx.getSource(), true)))
                 .then(Commands.literal("false").executes(ctx -> objdebugSet(ctx.getSource(), false)))
-                .then(Commands.literal("off").executes(ctx -> objdebugSet(ctx.getSource(), false))));
+                .then(Commands.literal("off").executes(ctx -> objdebugSet(ctx.getSource(), false)))
+                // feedback：被本模组执行的映射命令（give 等）的原版反馈
+                .then(Commands.literal("feedback")
+                        .executes(ctx -> objdebugFeedbackStatus(ctx.getSource()))
+                        .then(Commands.literal("true").executes(ctx -> objdebugFeedbackSet(ctx.getSource(), true)))
+                        .then(Commands.literal("on").executes(ctx -> objdebugFeedbackSet(ctx.getSource(), true)))
+                        .then(Commands.literal("false").executes(ctx -> objdebugFeedbackSet(ctx.getSource(), false)))
+                        .then(Commands.literal("off").executes(ctx -> objdebugFeedbackSet(ctx.getSource(), false)))));
     }
 
-    // ===================== /objdebug：调试输出总开关（v0.4.3） =====================
+    // ===================== /objdebug：调试输出总开关（v0.4.3 / v0.4.4） =====================
 
-    /** /objdebug（无参）：显示当前状态与用法 */
+    /** /objdebug（无参）：显示两个开关的当前状态与用法 */
     private static int objdebugStatus(CommandSourceStack source) {
-        boolean on = ObjDebug.on();
-        source.sendSuccess(() -> Component.literal(String.format(
-                "§7[Objuilder] 调试输出 = %s§7｜/objdebug true|false|on|off 切换",
-                on ? "§atrue（全部诊断输出可见）" : "§cfalse（一切调试输出已隐藏）")), false);
-        source.sendSuccess(() -> Component.literal(
-                "§8  · 控制台：本模组的 info/warn 诊断日志（[Objuilder]/[Glb]/阴影诊断/交互拾取/摆放碰撞盒…）"), false);
-        source.sendSuccess(() -> Component.literal(
-                "§8  · 屏上：actionbar 诊断提示（触发失败：已消耗/不可交互/准星偏离 N 格 等）"), false);
-        source.sendSuccess(() -> Component.literal(
-                "§8  · 不受影响：error 级报错（含异常栈）与指令回显（/objplace 等）"), false);
-        source.sendSuccess(() -> Component.literal(
-                "§8  · 持久化：config/polarisobjbuilder-common.toml → debug"), false);
+        boolean debugOn = ObjDebug.on();
+        boolean fbOn = ObjDebug.commandFeedback();
+        ObjDebug.control(source, () -> Component.literal(String.format(
+                "§7[Objuilder·开关] 调试输出 = %s§7｜命令反馈 = %s",
+                debugOn ? "§atrue" : "§cfalse",
+                fbOn ? "§atrue" : "§cfalse")), false);
+        ObjDebug.control(source, () -> Component.literal(
+                "§8  · /objdebug true|false|on|off §7—— 调试输出总开关"), false);
+        ObjDebug.control(source, () -> Component.literal(
+                "§8      false 时隐藏：① 控制台诊断日志（[Objuilder]/[Glb]/阴影诊断/交互拾取/摆放碰撞盒…）"), false);
+        ObjDebug.control(source, () -> Component.literal(
+                "§8                 ② 屏上 actionbar 诊断提示（触发失败：已消耗/不可交互/准星偏离 N 格 等）"), false);
+        ObjDebug.control(source, () -> Component.literal(
+                "§8                 ③ 聊天框 `[Objuilder]` / `[Glb]` 前缀消息（/objplace、/objclear 等回执）"), false);
+        ObjDebug.control(source, () -> Component.literal(
+                "§8  · /objdebug feedback true|false|on|off §7—— 被本模组执行的命令（give 等）的原版反馈"), false);
+        ObjDebug.control(source, () -> Component.literal(
+                "§8      false 时以 withSuppressedOutput() 执行 → 不再出现\"已将 1 个…给予…\"；返回值判定不受影响"), false);
+        ObjDebug.control(source, () -> Component.literal(
+                "§8  · 不受调试开关影响：error 级报错（含异常栈）、无前缀的指令失败提示、/objdebug 自身回执"), false);
+        ObjDebug.control(source, () -> Component.literal(
+                "§8  · 持久化：config/polarisobjbuilder-common.toml → debug / commandFeedback"), false);
         return 1;
     }
 
@@ -164,10 +182,11 @@ public class PolarisObjuilderServerEvents {
             persistErr = t.toString();
         }
         final String err = persistErr;
-        source.sendSuccess(() -> Component.literal(String.format(
-                "§a[Objuilder] 调试输出 → %s%s%s",
+        ObjDebug.control(source, () -> Component.literal(String.format(
+                "§a[Objuilder·开关] 调试输出 → %s%s%s",
                 value ? "§atrue" : "§cfalse",
-                value ? "§a（诊断日志与屏上诊断提示恢复输出）" : "§a（一切调试输出已隐藏；error 级报错与指令回显不受影响）",
+                value ? "§a（诊断日志、屏上诊断提示、[Objuilder]/[Glb] 聊天消息恢复输出）"
+                        : "§a（诊断日志 + 屏上诊断提示 + [Objuilder]/[Glb] 聊天消息全部隐藏）",
                 err == null ? "" : "§c｜写入配置失败：" + err)), true);
         // 开关本身的变化必须留痕（不走 ObjDebug，否则"关掉调试"这件事在日志里查不到）
         PolarisObjuilder.LOGGER.info("[Objuilder] 调试输出开关 {}（{}）{}",
@@ -176,6 +195,37 @@ public class PolarisObjuilderServerEvents {
         if (changed && value) {
             ObjDebug.info("[Objuilder] 调试输出已恢复：以下为本模组诊断日志");
         }
+        return 1;
+    }
+
+    /** /objdebug feedback（无参）：显示命令反馈开关状态 */
+    private static int objdebugFeedbackStatus(CommandSourceStack source) {
+        boolean on = ObjDebug.commandFeedback();
+        ObjDebug.control(source, () -> Component.literal(String.format(
+                "§7[Objuilder·开关] 命令反馈 = %s§7（/objdebug feedback true|false|on|off 切换）",
+                on ? "§atrue（give 等命令的原版回显保留）"
+                        : "§cfalse（被本模组执行的命令静默，不再回显\"已将 1 个…给予…\"）")), false);
+        return 1;
+    }
+
+    /** /objdebug feedback true|false|on|off：切换映射命令的原版反馈 + 落盘 + 回显 */
+    private static int objdebugFeedbackSet(CommandSourceStack source, boolean value) {
+        ObjDebug.setCommandFeedback(value);
+        String persistErr = null;
+        try {
+            Config.saveCommandFeedback(value);
+        } catch (Throwable t) {
+            persistErr = t.toString();
+        }
+        final String err = persistErr;
+        ObjDebug.control(source, () -> Component.literal(String.format(
+                "§a[Objuilder·开关] 命令反馈 → %s%s%s",
+                value ? "§atrue" : "§cfalse",
+                value ? "§a（give 等映射命令的原版反馈恢复）"
+                        : "§a（映射命令静默执行；返回值/消耗判定不受影响）",
+                err == null ? "" : "§c｜写入配置失败：" + err)), true);
+        PolarisObjuilder.LOGGER.info("[Objuilder] 命令反馈开关 {}（commandFeedback）{}",
+                value ? "ON" : "OFF", err == null ? "" : "，写入配置失败：" + err);
         return 1;
     }
 
@@ -260,7 +310,7 @@ public class PolarisObjuilderServerEvents {
         long gameTime = level.getGameTime();
         int disabled = GlbInteraction.setOpen(level, name, true,
                 new GlbAnimPayload(GlbAnimPayload.ACT_PLAY, name, (byte) mode.ordinal(), gameTime, 1.0f, -1));
-        source.sendSuccess(() -> Component.literal(String.format(
+        ObjDebug.chat(source, () -> Component.literal(String.format(
                 "§a[Glb] 触发动画 '%s' → %s（碰撞盒 %s）", name,
                 mode == GlbAnimationController.PlayMode.ONCE ? "once" : "loop",
                 disabled > 0 ? "关闭 " + disabled + " 个" : "无")), false);
@@ -280,7 +330,7 @@ public class PolarisObjuilderServerEvents {
             PacketDistributor.sendToAllPlayers(new GlbAnimPayload(action, name, (byte) 0, 0L, 1.0f, -1));
         }
         String msg = extra;
-        source.sendSuccess(() -> Component.literal(String.format(
+        ObjDebug.chat(source, () -> Component.literal(String.format(
                 "§a[Glb] 动画 '%s' %s%s", name, verb, msg)), false);
         return 1;
     }
@@ -329,7 +379,7 @@ public class PolarisObjuilderServerEvents {
         long blocking = colliders.stream().filter(c -> c.collides).count();
         long useOnly = colliders.size() - blocking;
         long withCmd = colliders.stream().filter(GlbModel.ColliderDef::hasCommand).count();
-        source.sendSuccess(() -> Component.literal(String.format(
+        ObjDebug.chat(source, () -> Component.literal(String.format(
                 "§a[Objuilder] 已摆放 #%d %s @ %.1f %.1f %.1f yaw=%.1f scale=%.2f"
                         + "（碰撞盒 %d 个：挡人 %d / 仅交互 %d / 带命令 %d；光源方块 %d 个）",
                 id, normalized, pos.x(), pos.y(), pos.z(), yaw, scale,
@@ -342,13 +392,14 @@ public class PolarisObjuilderServerEvents {
         PlacementSavedData data = PlacementSavedData.get(source.getServer().overworld());
         List<Placement> all = data.all();
         if (all.isEmpty()) {
-            source.sendSuccess(() -> Component.literal("§7[Objuilder] 无摆放模型"), false);
+            ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 无摆放模型"), false);
             return 1;
         }
-        source.sendSuccess(() -> Component.literal(
+        ObjDebug.chat(source, () -> Component.literal(
                 String.format("§7[Objuilder] 已摆放 %d 个模型：", all.size())), false);
         for (Placement p : all) {
-            source.sendSuccess(() -> Component.literal(String.format(
+            // 明细行与被过滤的表头（[Objuilder] 前缀）同组 → 一并挂开关，避免"表头没了、明细还在"
+            ObjDebug.chat(source, () -> Component.literal(String.format(
                     "  §f#%d §a%s §7@ %.1f/%.1f/%.1f yaw=%.1f scale=%.2f",
                     p.id(), p.ref(), p.x(), p.y(), p.z(), p.yaw(), p.scale())), false);
         }
@@ -375,7 +426,7 @@ public class PolarisObjuilderServerEvents {
         }
         // 事项 1/4：广播客户端释放该摆放独立的几何/纹理缓存
         PacketDistributor.sendToAllPlayers(new CacheReleasePayload(p.id()));
-        source.sendSuccess(() -> Component.literal("§a[Objuilder] 已移除摆放 #" + id), true);
+        ObjDebug.chat(source, () -> Component.literal("§a[Objuilder] 已移除摆放 #" + id), true);
         return 1;
     }
 
@@ -401,7 +452,7 @@ public class PolarisObjuilderServerEvents {
             ObjDebug.info("[Objuilder] 已清空全部摆放 → 广播释放 {} 个摆放缓存", all.size());
         }
         int cleared = removed;
-        source.sendSuccess(() -> Component.literal(
+        ObjDebug.chat(source, () -> Component.literal(
                 String.format("§a[Objuilder] 已清空 %d 个摆放模型", cleared)), true);
         return 1;
     }
@@ -412,11 +463,11 @@ public class PolarisObjuilderServerEvents {
     private static int objcmdReload(CommandSourceStack source) {
         CommandTable.LoadResult result = CommandTable.load(source.getServer());
         if (result.ok()) {
-            source.sendSuccess(() -> Component.literal("§a[Objuilder] " + result.message()
+            ObjDebug.chat(source, () -> Component.literal("§a[Objuilder] " + result.message()
                     + "\n§7文件：" + CommandTable.file()), true);
             return 1;
         }
-        source.sendFailure(Component.literal("§c[Objuilder] " + result.message()));
+        ObjDebug.chatFail(source, Component.literal("§c[Objuilder] " + result.message()));
         return 0;
     }
 
@@ -424,10 +475,10 @@ public class PolarisObjuilderServerEvents {
     private static int objcmdList(CommandSourceStack source) {
         List<String> keys = CommandTable.keys();
         if (keys.isEmpty()) {
-            source.sendSuccess(() -> Component.literal("§7[Objuilder] 命令表为空（" + CommandTable.file() + "）"), false);
+            ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 命令表为空（" + CommandTable.file() + "）"), false);
             return 1;
         }
-        source.sendSuccess(() -> Component.literal(
+        ObjDebug.chat(source, () -> Component.literal(
                 String.format("§7[Objuilder] 命令表 %d 个键（%s）：", keys.size(), CommandTable.file())), false);
         for (String key : keys) {
             CommandTable.Entry e = CommandTable.get(key);
@@ -443,7 +494,7 @@ public class PolarisObjuilderServerEvents {
                     e.perm(), e.consume().name().toLowerCase(java.util.Locale.ROOT),
                     e.feedback() ? " feedback" : "");
             String line = "  §f" + key + " §7→ §a" + cmd + more + flags;
-            source.sendSuccess(() -> Component.literal(line), false);
+            ObjDebug.chat(source, () -> Component.literal(line), false);
         }
         return 1;
     }
@@ -452,12 +503,12 @@ public class PolarisObjuilderServerEvents {
     private static int objcmdTest(CommandSourceStack source, String key) throws CommandSyntaxException {
         ServerPlayer player = source.getPlayerOrException();
         if (!CommandTable.has(key)) {
-            source.sendFailure(Component.literal("§c[Objuilder] 命令键不存在: " + key
+            ObjDebug.chatFail(source, Component.literal("§c[Objuilder] 命令键不存在: " + key
                     + "（可用 /objcmd list 查看）"));
             return 0;
         }
         int result = CommandTable.run(player, key, "test", -1, player.position());
-        source.sendSuccess(() -> Component.literal(String.format(
+        ObjDebug.chat(source, () -> Component.literal(String.format(
                 "§a[Objuilder] 测试命令键 '%s' → 返回值 %d（未消耗任何部件；多命令为各条返回值之和）", key, result)), false);
         return result > 0 ? 1 : 0;
     }

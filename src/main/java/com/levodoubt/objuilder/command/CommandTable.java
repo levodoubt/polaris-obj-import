@@ -287,8 +287,10 @@ public final class CommandTable {
                         capturedSuccess[0] = success;
                         capturedResult[0] = result;
                     }, CommandResultCallback::chain);
-            if (!entry.feedback()) {
-                source = source.withSuppressedOutput();   // silent=true 抑制反馈；回调仍有效
+            if (!entry.feedback() || !ObjDebug.commandFeedback()) {
+                // 静默执行：① 该键在 commands.json 里写了 feedback=false；② 全局开关 /objdebug feedback false
+                // 开（用户要求"屏蔽 give 之类的命令反馈"）。silent=true 抑制回显；命令返回值/回调不受影响
+                source = source.withSuppressedOutput();
             }
             try {
                 server.getCommands().performPrefixedCommand(source, command);

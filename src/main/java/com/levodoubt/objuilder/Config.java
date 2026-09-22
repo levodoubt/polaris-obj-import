@@ -43,6 +43,14 @@ public class Config {
                     "游戏内用 /objdebug true|false|on|off 切换（会立即写回本文件）。")
             .define("debug", true);
 
+    /** 映射命令（commands.json 的 `$键`）原版反馈总开关：false = 被本模组执行的命令（give 等）不再回显 */
+    public static final ModConfigSpec.BooleanValue COMMAND_FEEDBACK = BUILDER
+            .comment("被本模组执行的映射命令（commands.json 的 $键，如 give）是否保留原版反馈。",
+                    "true（默认）= 保留（\"已将 1 个…给予…\"）；false = 以 withSuppressedOutput() 执行。",
+                    "命令的返回值不受影响（消耗判定 consume=result 照常工作）。",
+                    "游戏内用 /objdebug feedback true|false 切换（会立即写回本文件）。")
+            .define("commandFeedback", true);
+
     static final ModConfigSpec SPEC = BUILDER.build();
 
     /** 读配置里的调试开关（供 ObjDebug 同步；配置未加载时会抛，调用方需 try/catch） */
@@ -53,6 +61,17 @@ public class Config {
     /** 写调试开关并落盘（/objdebug 调用；落盘失败抛异常，由指令侧捕获提示） */
     public static void saveDebug(boolean value) {
         DEBUG.set(value);
+        SPEC.save();
+    }
+
+    /** 读配置里的命令反馈开关（供 ObjDebug 同步） */
+    public static boolean commandFeedbackConfigured() {
+        return COMMAND_FEEDBACK.get();
+    }
+
+    /** 写命令反馈开关并落盘（/objdebug feedback 调用） */
+    public static void saveCommandFeedback(boolean value) {
+        COMMAND_FEEDBACK.set(value);
         SPEC.save();
     }
 

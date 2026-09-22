@@ -92,7 +92,7 @@ public class ObjImportCommand {
         String finalName = modelName;
         File finalObjFile = objFile;
 
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台切分中..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 后台切分中..."), false);
         // 后台线程：切分 + 烘焙几何缓存（带进度）
         CompletableFuture.supplyAsync(() -> {
             final int[] lastPct = {0};
@@ -102,7 +102,7 @@ public class ObjImportCommand {
                     lastPct[0] = pct;
                     int fp = pct;
                     Minecraft.getInstance().execute(() ->
-                            source.sendSuccess(() -> Component.literal(
+                            ObjDebug.chat(source, () -> Component.literal(
                                     "§7[Objuilder] 切分中... " + fp + "%"), false));
                 }
             });
@@ -136,7 +136,7 @@ public class ObjImportCommand {
 
             // 分块摆放：表面片 + 内部石头
             placeBatched(level, base, result.placements(), result.interior(), fillMode,
-                    () -> source.sendSuccess(() -> Component.literal(String.format(
+                    () -> ObjDebug.chat(source, () -> Component.literal(String.format(
                             "§a[Objuilder] %s 导入完成 → 顶点 %d · 三角形 %d · 表面格 %d · 模板族 %d · 渲染三角形 %d · 内部石头 %d",
                             fillMode ? "子块" : "子片",
                             s.vertCount(), s.triCount(), s.gridCells(), s.pieceCount(), s.totalRenderTris(),
@@ -158,7 +158,7 @@ public class ObjImportCommand {
         final File inFile = f;
         final File targetFile = outFile;
 
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台烘焙中..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 后台烘焙中..."), false);
         CompletableFuture.supplyAsync(() -> {
             ObjMesh mesh = ObjParser.parse(inFile);
             Voxelizer.Result result = Voxelizer.voxelize(mesh, 16);
@@ -174,7 +174,7 @@ public class ObjImportCommand {
             if (stats == null) {
                 source.sendFailure(Component.literal("烘焙导出失败，详见日志"));
             } else {
-                source.sendSuccess(() -> Component.literal(String.format(
+                ObjDebug.chat(source, () -> Component.literal(String.format(
                         "§a[Objuilder] 烘焙完成 → %s (表面格 %d · 模板族 %d · 渲染三角形 %d)",
                         targetFile.getAbsolutePath(), stats.gridCells(), stats.pieceCount(), stats.totalRenderTris())), true);
             }
@@ -195,7 +195,7 @@ public class ObjImportCommand {
         final File inFile = f;
         final File targetFile = outFile;
 
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台生成 schematic..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 后台生成 schematic..."), false);
         CompletableFuture.supplyAsync(() -> {
             ObjMesh mesh = ObjParser.parse(inFile);
             // 进度回调：后台线程 → 主线程 → 聊天栏（每 5% 报一次）
@@ -206,7 +206,7 @@ public class ObjImportCommand {
                     lastPct[0] = pct;
                     int fp = pct;
                     Minecraft.getInstance().execute(() ->
-                            source.sendSuccess(() -> Component.literal(
+                            ObjDebug.chat(source, () -> Component.literal(
                                     "§7[Objuilder] 切分中... " + fp + "% (" + done + "/" + total + " 面)"), false));
                 }
             });
@@ -217,7 +217,7 @@ public class ObjImportCommand {
                     if (pct == 100 || pct % 10 == 0) {
                         int fp = pct;
                         Minecraft.getInstance().execute(() ->
-                                source.sendSuccess(() -> Component.literal(
+                                ObjDebug.chat(source, () -> Component.literal(
                                         "§7[Objuilder] 写文件... " + fp + "%"), false));
                     }
                 });
@@ -230,7 +230,7 @@ public class ObjImportCommand {
             if (stats == null) {
                 source.sendFailure(Component.literal("schematic 导出失败，详见日志"));
             } else {
-                source.sendSuccess(() -> Component.literal(String.format(
+                ObjDebug.chat(source, () -> Component.literal(String.format(
                         "§a[Objuilder] schematic 完成 → %s (表面格 %d · 内部石头 %d)",
                         targetFile.getAbsolutePath(), stats.gridCells(), stats.interiorCount())), true);
             }
@@ -247,7 +247,7 @@ public class ObjImportCommand {
             return 0;
         }
         final File inFile = f;
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 读取 schematic..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 读取 schematic..."), false);
         CompletableFuture.supplyAsync(() -> {
             try {
                 return Schematic.load(inFile);
@@ -325,7 +325,7 @@ public class ObjImportCommand {
         if (idx.get() < total) {
             mc.execute(() -> placeSchemBatch(level, base, data, idx, total, source, mc));
         } else {
-            source.sendSuccess(() -> Component.literal(
+            ObjDebug.chat(source, () -> Component.literal(
                     "§a[Objuilder] schematic 放置完成 → " + total + " 格"), true);
         }
     }
@@ -339,7 +339,7 @@ public class ObjImportCommand {
             return 0;
         }
         final File inFile = f;
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 读取烘焙文件中..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 读取烘焙文件中..."), false);
         CompletableFuture.supplyAsync(() -> {
             try {
                 return BakeFormat.load(inFile);
@@ -365,7 +365,7 @@ public class ObjImportCommand {
             clearArea(level, base, bounds);
 
             placeBatched(level, base, baked.placements(), baked.interior(), true,
-                    () -> source.sendSuccess(() -> Component.literal(String.format(
+                    () -> ObjDebug.chat(source, () -> Component.literal(String.format(
                             "§a[Objuilder] 摆放完成 → 表面格 %d · 模板族 %d · 渲染三角形 %d",
                             baked.stats().gridCells(), baked.stats().pieceCount(), baked.stats().totalRenderTris())), true));
         }, Minecraft.getInstance());
@@ -643,7 +643,7 @@ public class ObjImportCommand {
         String finalName = modelName;
         File finalObjFile = objFile;
 
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台共面域切分中..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 后台共面域切分中..."), false);
         CompletableFuture.supplyAsync(() -> {
             final int[] lastPct = {0};
             Voxelizer.DomainResult result = Voxelizer.visualize(finalMesh, (done, total) -> {
@@ -652,7 +652,7 @@ public class ObjImportCommand {
                     lastPct[0] = pct;
                     int fp = pct;
                     Minecraft.getInstance().execute(() ->
-                            source.sendSuccess(() -> Component.literal(
+                            ObjDebug.chat(source, () -> Component.literal(
                                     "§7[Objuilder] 切分中... " + fp + "%"), false));
                 }
             });
@@ -690,7 +690,7 @@ public class ObjImportCommand {
             LastImportStats.renderTris = result.totalTris();
             LastImportStats.importTimeMs = 0;
 
-            source.sendSuccess(() -> Component.literal(String.format(
+            ObjDebug.chat(source, () -> Component.literal(String.format(
                     "§a[Objuilder] 纯视觉导入完成 → %s · 三角形 %d（1 实体整体渲染）",
                     finalName, result.totalTris())), true);
         }, Minecraft.getInstance());
@@ -710,7 +710,7 @@ public class ObjImportCommand {
         final File inFile = f;
         final File targetFile = outFile;
 
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台共面域烘焙中..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 后台共面域烘焙中..."), false);
         CompletableFuture.supplyAsync(() -> {
             ObjMesh mesh = ObjParser.parse(inFile);
             Voxelizer.DomainResult result = Voxelizer.visualize(mesh, null);
@@ -726,7 +726,7 @@ public class ObjImportCommand {
             if (result == null) {
                 source.sendFailure(Component.literal("共面域烘焙导出失败，详见日志"));
             } else {
-                source.sendSuccess(() -> Component.literal(String.format(
+                ObjDebug.chat(source, () -> Component.literal(String.format(
                         "§a[Objuilder] 纯视觉烘焙完成 → %s (三角形 %d)",
                         targetFile.getAbsolutePath(), result.totalTris())), true);
             }
@@ -743,7 +743,7 @@ public class ObjImportCommand {
             return 0;
         }
         final File inFile = f;
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 读取共面域烘焙文件中..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 读取共面域烘焙文件中..."), false);
         CompletableFuture.supplyAsync(() -> {
             try {
                 return BakeFormat.loadDomains(inFile);
@@ -776,7 +776,7 @@ public class ObjImportCommand {
             LastImportStats.gridCells = s.faceCount();
             LastImportStats.pieceCount = s.domains().size();
             LastImportStats.renderTris = s.totalTris();
-            source.sendSuccess(() -> Component.literal(String.format(
+            ObjDebug.chat(source, () -> Component.literal(String.format(
                     "§a[Objuilder] 纯视觉摆放完成 → 三角形 %d（1 实体）",
                     s.totalTris())), true);
         }, Minecraft.getInstance());
@@ -831,7 +831,7 @@ public class ObjImportCommand {
         final File inFile = f;
         final float finalScale = scale;
 
-        source.sendSuccess(() -> Component.literal("§7[Objuilder] 后台解析 glb 中..."), false);
+        ObjDebug.chat(source, () -> Component.literal("§7[Objuilder] 后台解析 glb 中..."), false);
         CompletableFuture.supplyAsync(() -> {
             try {
                 GlbModel model = GlbParser.parse(inFile);
@@ -888,7 +888,7 @@ public class ObjImportCommand {
             LastImportStats.renderTris = flat.triangles().size();
             LastImportStats.importTimeMs = 0;
 
-            source.sendSuccess(() -> Component.literal(String.format(
+            ObjDebug.chat(source, () -> Component.literal(String.format(
                     "§a[Objuilder] glb 导入完成 → %s · 三角形 %d（1 实体整体渲染，材质 %d%s）",
                     inFile.getName(), flat.triangles().size(), model.materials.size(),
                     animated ? " · §b循环动画已启动" : "")), true);

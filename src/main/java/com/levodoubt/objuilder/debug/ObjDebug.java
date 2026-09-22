@@ -3,6 +3,9 @@ package com.levodoubt.objuilder.debug;
 import com.levodoubt.objuilder.Config;
 import com.levodoubt.objuilder.PolarisObjuilder;
 
+import java.util.function.Supplier;
+
+import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Player;
 
@@ -36,14 +39,31 @@ public final class ObjDebug {
     /** 默认 true = 保持开发/测试期行为（能看到全部诊断）；发布前可在配置里改默认值 */
     private static volatile boolean enabled = true;
 
+    /**
+     * 命令反馈开关（`/objdebug feedback false`）：是否保留**被本模组执行的映射命令**（commands.json 的 `$键`，
+     * 如 `give`）自身产生的原版反馈（"已将 1 个…给予…"）。
+     * 默认 true = 有反馈；false = 以 {@code withSuppressedOutput()} 执行（静默，但返回值仍可取 → 消耗判定不受影响）。
+     */
+    private static volatile boolean commandFeedback = true;
+
     /** 调试输出是否开启（true = 打印） */
     public static boolean on() {
         return enabled;
     }
 
+    /** 是否保留映射命令的原版反馈（false = 屏蔽 give 之类的回显） */
+    public static boolean commandFeedback() {
+        return commandFeedback;
+    }
+
     /** 仅设置运行期开关（幂等，不落盘）；落盘走 {@link Config#saveDebug(boolean)} */
     public static void set(boolean value) {
         enabled = value;
+    }
+
+    /** 仅设置命令反馈开关（幂等，不落盘）；落盘走 {@link Config#saveCommandFeedback(boolean)} */
+    public static void setCommandFeedback(boolean value) {
+        commandFeedback = value;
     }
 
     /**
@@ -56,6 +76,64 @@ public final class ObjDebug {
         } catch (Throwable ignored) {
             // 配置还没加载好：保持默认值（true），等下一次同步
         }
+        try {
+            setCommandFeedback(Config.commandFeedbackConfigured());
+        } catch (Throwable ignored) {
+            // 同上
+        }
+    }
+
+    // ===================== 聊天框输出（命令反馈） =====================
+
+    /**
+     * 命令反馈（chat）：开关关闭时静默。
+     * 只用于 `[Objuilder]` / `[Glb]` 前缀的本模组消息；**指令失败提示（无前缀）不在此列**。
+     */
+    public static void chat(CommandSourceStack source, Supplier<Component> message, boolean broadcastToOps) {
+        if (enabled) {
+            source.sendSuccess(message, broadcastToOps);
+        }
+    }
+
+    /** 命令反馈（失败分支，同上） */
+    public static void chatFail(CommandSourceStack source, Component message) {
+        if (enabled) {
+            source.sendFailure(message);
+        }
+    }
+
+    /** 控制通道：`/objdebug` 自身的回执**不受开关影响**（否则关掉后无法确认开关状态） */
+    public static void control(CommandSourceStack source, Supplier<Component> message, boolean broadcastToOps) {
+        source.sendSuccess(message, broadcastToOps);
+    }
+
+    /** 控制通道（失败分支） */
+    public static void controlFail(CommandSourceStack source, Component message) {
+        source.sendFailure(message);
+    }
+
+    /** 本模组聊天前缀（隐藏目标）：`[Objuilder]` 与 `[Glb]` */
+    private static final String[] CHAT_PREFIXES = {"[Objuilder]", "[Glb]"};
+
+    /** 匹配 `§x` 颜色/格式码（消息可能是 `Component.literal("§c[Objuilder] …")`，此时 § 是正文一部分） */
+    private static final java.util.regex.Pattern FORMAT_CODE = java.util.regex.Pattern.compile("\u00a7.");
+
+    /**
+     * 该聊天消息是否为本模组前缀（`[Objuilder]` / `[Glb]`，大小写不敏感）。
+     * 先剥掉 `§x` 格式码再判断，保证 `Component.literal("§c[Objuilder] …")` 与
+     * `Component.literal("[Objuilder] …").withStyle(RED)` 两种写法都能命中。
+     */
+    public static boolean isModChat(Component message) {
+        if (message == null) {
+            return false;
+        }
+        String plain = FORMAT_CODE.matcher(message.getString()).replaceAll("").trim();
+        for (String prefix : CHAT_PREFIXES) {
+            if (plain.regionMatches(true, 0, prefix, 0, prefix.length())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ===================== 日志出口（error 除外：报错永不被开关关掉） =====================

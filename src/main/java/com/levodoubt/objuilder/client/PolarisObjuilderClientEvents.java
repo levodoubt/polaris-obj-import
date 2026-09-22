@@ -1,11 +1,13 @@
 package com.levodoubt.objuilder.client;
 
 import com.levodoubt.objuilder.PolarisObjuilder;
+import com.levodoubt.objuilder.debug.ObjDebug;
 
 import net.minecraft.client.Minecraft;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.client.event.ClientChatReceivedEvent;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 
@@ -47,5 +49,21 @@ public class PolarisObjuilderClientEvents {
         PlacementModelLoader.clearAll();
         DomainModelCache.clearAll();
         GlbAnimationManager.clear();
+    }
+
+    /**
+     * 聊天框兜底过滤（v0.4.4，用户要求「对话框内所有 [Objuilder] 前缀消息都屏蔽」）：
+     * 调试关闭时，把前缀为 `[Objuilder]` / `[Glb]` 的聊天消息整条拦掉（含 system chat —— 指令反馈走的就是它）。
+     *
+     * <p>为什么服务端已经静默了还要客户端再拦一道：① 服务端只静默**本模组主动发出的**消息，
+     * 数据包/其它模组/剧情命令用同样前缀发的消息它管不到；② 联机时客户端可能还没收到开关同步；
+     * ③ 这是"按前缀"的最终保证 —— 只要消息文本以本模组前缀开头，就一定不出现在对话框里。
+     */
+    @SubscribeEvent
+    public static void onChatReceived(ClientChatReceivedEvent event) {
+        if (ObjDebug.on()) return;
+        if (ObjDebug.isModChat(event.getMessage())) {
+            event.setCanceled(true);
+        }
     }
 }
