@@ -2,12 +2,16 @@ package com.levodoubt.objuilder;
 
 import com.levodoubt.objuilder.client.GlbAnimationManager;
 import com.levodoubt.objuilder.client.PlacementModelLoader;
+import com.levodoubt.objuilder.entity.ColliderEntity;
 import com.levodoubt.objuilder.network.CacheReleasePayload;
+import com.levodoubt.objuilder.network.ColliderClickPayload;
 import com.levodoubt.objuilder.network.GlbAnimPayload;
 
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
@@ -26,7 +30,9 @@ public class PolarisObjuilderNetwork {
                 .playBidirectional(GlbAnimPayload.TYPE, GlbAnimPayload.STREAM_CODEC,
                         PolarisObjuilderNetwork::handleAnimPayload)
                 .playBidirectional(CacheReleasePayload.TYPE, CacheReleasePayload.STREAM_CODEC,
-                        PolarisObjuilderNetwork::handleCacheRelease);
+                        PolarisObjuilderNetwork::handleCacheRelease)
+                .playBidirectional(ColliderClickPayload.TYPE, ColliderClickPayload.STREAM_CODEC,
+                        PolarisObjuilderNetwork::handleColliderClick);
     }
 
     /** 缓存释放包处理：仅客户端接收并释放该摆放的几何/纹理缓存（专用服务器永不触发该分支） */
@@ -47,5 +53,41 @@ public class PolarisObjuilderNetwork {
                     PolarisObjuilder.LOGGER.error("[Glb] 动画控制包处理失败", e);
                     return null;
                 });
+    }
+
+    // ===================== 点击辅助（2.1.16，客户端 → 服务端） =====================
+
+    /** 同一实体 3 tick 内不重复触发（同一次点击的双保险防抖） */
+    private static final java.util.Map<Integer, Long> ASSIST_LAST = new java.util.HashMap<>();
+    private static long assistWarnAtMs = 0L;
+
+    /** 点击辅助包：仅服务端处理（客户端用宽容射线命中后发来，绕开原版 3 格实体交互距离） */
+    private static void handleColliderClick(ColliderClickPayload payload, IPayloadContext context) {
+        if (context.flow().isClientbound()) return;
+        context.enqueueWork(() -> {
+            if (!(context.player() instanceof ServerPlayer player)) return;
+            if (!(player.level().getEntity(payload.entityId()) instanceof ColliderEntity ce)) return;
+            if (player.isSpectator() || !ce.isPickable()) return;
+            double reach = 4.5;
+            double d2 = player.getEyePosition().distanceToSqr(ce.getBoundingBox().getCenter());
+            if (d2 > reach * reach) {
+                long nowMs = net.minecraft.Util.getMillis();
+                if (nowMs - assistWarnAtMs > 2000L) {
+                    assistWarnAtMs = nowMs;
+                    PolarisObjuilder.LOGGER.info("[Objuilder][点击辅助] 服务端拒绝：部件 '{}' 距玩家 {} 格 > {} 格",
+                            ce.getPartName(), String.format("%.2f", Math.sqrt(d2)), reach);
+                }
+                return;
+            }
+            long now = player.level().getGameTime();
+            Long last = ASSIST_LAST.get(payload.entityId());
+            if (last != null && now - last < 3L) return;
+            ASSIST_LAST.put(payload.entityId(), now);
+            // 复用实体自身的交互逻辑（动画 → 消耗占位 → 命令 → 失败回滚），不复制任何判定
+            ce.interact(player, payload.hand() == 1 ? InteractionHand.OFF_HAND : InteractionHand.MAIN_HAND);
+        }).exceptionally(e -> {
+            PolarisObjuilder.LOGGER.error("[Objuilder] 点击辅助包处理失败", e);
+            return null;
+        });
     }
 }
