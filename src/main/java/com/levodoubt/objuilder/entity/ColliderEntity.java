@@ -84,11 +84,16 @@ public class ColliderEntity extends Entity {
     private static final EntityDataAccessor<Boolean> DATA_PICK_ENABLED =
             SynchedEntityData.defineId(ColliderEntity.class, EntityDataSerializers.BOOLEAN);
 
+    /**
+     * 所属摆放 id（B1 收尾·事项 4：精确 toggle 用，多同名门独立开关）；-1 = 未知。
+     * B1 收尾修复：改为 entityData **同步双端**——此前只在服务端有值，客户端交互日志/提示恒显示
+     * `摆放 #-1`（排查时无法把命中盒对应到具体摆放）。
+     */
+    private static final EntityDataAccessor<Integer> DATA_PLACEMENT_ID =
+            SynchedEntityData.defineId(ColliderEntity.class, EntityDataSerializers.INT);
+
     /** 当前世界 AABB（从 SynchedEntityData 重建；makeBoundingBox override 恒返回它，可表达任意矩形盒） */
     private AABB box = new AABB(Vec3.ZERO, Vec3.ZERO);
-
-    /** 所属摆放 id（B1 收尾·事项 4：精确 toggle 用，多同名门独立开关）；-1 = 未知 */
-    private int placementId = -1;
 
     public ColliderEntity(EntityType<?> type, Level level) {
         super(type, level);
@@ -96,14 +101,14 @@ public class ColliderEntity extends Entity {
         rebuildBox();
     }
 
-    /** 所属摆放 id（服务端 spawn/恢复时设置；不随包同步，客户端交互只需 animBinding） */
+    /** 所属摆放 id（服务端 spawn/恢复时设置；随 entityData 同步客户端，供日志/提示显示"摆放 #N"） */
     public void setPlacementId(int placementId) {
-        this.placementId = placementId;
+        this.entityData.set(DATA_PLACEMENT_ID, placementId);
     }
 
     /** 所属摆放 id；-1 = 未知（服务端按它精确匹配右键 toggle 目标） */
     public int getPlacementId() {
-        return placementId;
+        return this.entityData.get(DATA_PLACEMENT_ID);
     }
 
     @Override
@@ -121,6 +126,7 @@ public class ColliderEntity extends Entity {
         // 默认 true：旧存档/旧实体没有该字段时行为与子工程 6/7 完全一致（阻挡）
         builder.define(DATA_COLLIDES, true);
         builder.define(DATA_PICK_ENABLED, true);
+        builder.define(DATA_PLACEMENT_ID, -1);
     }
 
     /**
@@ -421,7 +427,7 @@ public class ColliderEntity extends Entity {
         this.entityData.set(DATA_COLLIDES, !tag.contains("collides") || tag.getBoolean("collides"));
         // 摆放 id（子工程 8 复检修复）：原先不持久化 → 重进存档后为 -1，命令里 %placement% 取到 -1、
         // /objremove %placement% 失效。此处持久化；老存档无该字段时由 onServerStarted 按 SavedData 回填。
-        this.placementId = tag.contains("placementId") ? tag.getInt("placementId") : -1;
+        this.entityData.set(DATA_PLACEMENT_ID, tag.contains("placementId") ? tag.getInt("placementId") : -1);
         // active / pickEnabled 不持久化：重启强制恢复"阻挡 + 可点"——与 OPEN_PARTS / CONSUMED 内存态清零
         // （门默认关闭、命令盒恢复可点）一致，保证重启后碰撞状态与动画初始姿势（门关）对齐
         this.entityData.set(DATA_ACTIVE, true);
@@ -441,7 +447,7 @@ public class ColliderEntity extends Entity {
         tag.putString("partName", getPartName() == null ? "" : getPartName());
         tag.putString("cmdKey", getCmdKey() == null ? "" : getCmdKey());
         tag.putBoolean("collides", collides());
-        tag.putInt("placementId", placementId);
+        tag.putInt("placementId", getPlacementId());
     }
 
     @Override

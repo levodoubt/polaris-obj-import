@@ -129,6 +129,14 @@ public class PolarisObjuilderServerEvents {
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event) {
         MinecraftServer server = event.getServer();
+        // 世界会话边界：清空交互内存态（OPEN_PARTS / CONSUMED）。
+        // 必要性：两者是静态内存态且 key 只含"摆放 id"，而摆放 id 每个存档各自从 1 开始分配——
+        // 同一游戏进程内退出存档 A 再进存档 B，A 里点过的 `摆放#1@动画`（开）与 `摆放#1:部件`（已消耗）
+        // 会命中 B 的同 id 摆放，导致动态碰撞盒被跳过（点不动）或右键恒提示"已消耗"。
+        int stale = GlbInteraction.clearAll();
+        if (stale > 0) {
+            PolarisObjuilder.LOGGER.info("[Objuilder] 世界会话开始 → 已重置交互状态（清理残留 {} 条：开状态 + 已消耗）", stale);
+        }
         // 子工程 8：命令映射表（commands.json）——$ 命令键的键值对在这里进内存
         CommandTable.load(server);
         ServerLevel overworld = server.overworld();
@@ -303,6 +311,11 @@ public class PolarisObjuilderServerEvents {
             discardEntity(source.getServer(), cu);
         }
         data.remove(id);
+        // 跨存档/跨重摆状态残留修复：摆放 id 会被新摆放复用，移除时清掉它在 OPEN_PARTS/CONSUMED 里的键
+        int stale = GlbInteraction.clearPlacement(id);
+        if (stale > 0) {
+            PolarisObjuilder.LOGGER.info("[Objuilder] 摆放 #{} 移除 → 清理交互状态 {} 条（开状态/已消耗）", id, stale);
+        }
         // 事项 1/4：广播客户端释放该摆放独立的几何/纹理缓存
         PacketDistributor.sendToAllPlayers(new CacheReleasePayload(p.id()));
         source.sendSuccess(() -> Component.literal("§a[Objuilder] 已移除摆放 #" + id), true);
@@ -319,6 +332,8 @@ public class PolarisObjuilderServerEvents {
             for (UUID cu : p.colliderUuids()) {
                 discardEntity(source.getServer(), cu);
             }
+            // 同上：清空摆放时一并清掉其交互状态残留（重摆同 id 不会继承"已开/已消耗"）
+            GlbInteraction.clearPlacement(p.id());
         }
         data.clear();
         // 事项 1/4：清空后逐摆放广播释放客户端缓存
@@ -492,9 +507,18 @@ public class PolarisObjuilderServerEvents {
         if (colliders.isEmpty()) return uuids;
         Vec3 pos = new Vec3(p.x(), p.y(), p.z());
         StringBuilder sb = new StringBuilder();
+        int skipped = 0;
         for (GlbModel.ColliderDef c : colliders) {
             // 事项 4：按「摆放 id + 动画名」精确判断该动态盒是否已开（多同名门独立）
-            if (c.isDynamic() && GlbInteraction.isOpen(p.id(), c.animBinding)) continue;
+            if (c.isDynamic() && GlbInteraction.isOpen(p.id(), c.animBinding)) {
+                skipped++;
+                // 必须显式打印：动态盒被跳过 = 该部件在游戏里"根本没有交互载体"，
+                // 现场表现为"模型看得见但点不动"，而碰撞体数量正常也不报错，无从排查（经验：SKILL §7-12）
+                PolarisObjuilder.LOGGER.info(
+                        "[Objuilder] 摆放 #{} 跳过动态碰撞体 '{}'@{}（该摆放该动画处于「开」状态 → 不生成盒）",
+                        p.id(), c.name, c.animBinding);
+                continue;
+            }
             ColliderEntity ce = new ColliderEntity(PolarisObjuilder.COLLIDER_ENTITY.get(), level);
             ce.setPlacementId(p.id());
             AABB box = worldBox(c.minX, c.minY, c.minZ, c.maxX, c.maxY, c.maxZ, pos, p.yaw(), p.scale());
@@ -507,8 +531,9 @@ public class PolarisObjuilderServerEvents {
                     c.hasCommand() ? "$" + c.cmdKey : "",
                     box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ, c.collides));
         }
-        PolarisObjuilder.LOGGER.info("[Objuilder] 摆放 #{} 生成碰撞体 {} 个（scale={} yaw={} pos=({},{},{})）:{}",
-                p.id(), uuids.size(), p.scale(), p.yaw(), p.x(), p.y(), p.z(), sb);
+        PolarisObjuilder.LOGGER.info("[Objuilder] 摆放 #{} 生成碰撞体 {} 个{}（scale={} yaw={} pos=({},{},{})）:{}",
+                p.id(), uuids.size(), skipped > 0 ? "（跳过动态盒 " + skipped + " 个）" : "",
+                p.scale(), p.yaw(), p.x(), p.y(), p.z(), sb);
         return uuids;
     }
 

@@ -16,7 +16,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
  * 供右键（ColliderEntity.interact）与命令（/glbanim play/reset）共用，避免两处逻辑漂移。
  *
  * 语义（延续子工程 6 M2）：
- * - OPEN_PARTS：服务端内存态，记录"处于打开"的 (摆放id:动画名) 集合（重进游戏重置 → 门默认关闭）
+ * - OPEN_PARTS：服务端内存态，记录"处于打开"的 (摆放id:动画名) 集合（世界会话开始即清空 → 门默认关闭）
  * - 开门（play）：广播 GlbAnimPayload(PLAY, ONCE) + OPEN_PARTS.add + 碰撞体 active=false（门洞可穿过）
  * - 关门（reset）：广播 GlbAnimPayload(RESET) + OPEN_PARTS.remove + 碰撞体 active=true（恢复阻挡）
  *
@@ -30,7 +30,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
 public final class GlbInteraction {
     private GlbInteraction() {}
 
-    /** 服务端「部件开状态」：处于"开"的 (摆放id:动画名) key 集合（内存态；重进游戏重置为关=门默认关闭） */
+    /** 服务端「部件开状态」：处于"开"的 (摆放id:动画名) key 集合（内存态；世界会话开始即清空，见 clearAll） */
     private static final Set<String> OPEN_PARTS = new HashSet<>();
 
     /**
@@ -38,7 +38,8 @@ public final class GlbInteraction {
      * `$命令键` 盒执行"成功"后进此集合（不可点 + 不挡人），用于防止 `/glbanim reset` 之类
      * 全局动画操作把它重新"复活"成挡人实体。
      *
-     * <p>⚠️ 会话级内存态（与 OPEN_PARTS 一致）：重启后清零 → 已消耗盒恢复可点，
+     * <p>⚠️ 会话级内存态（与 OPEN_PARTS 一致）：世界会话开始（服务端启动/新存档）即清空（{@link #clearAll()}），
+     * 摆放被移除时按 id 清空（{@link #clearPlacement(int)}）→ 已消耗盒恢复可点，
      * 玩家已拿到的物品不会回收 → 可重复刷物品。解法是命令侧自带守卫（计分板/剧情 flag），见 `doc/2.1.13` §6.8。
      */
     private static final Set<String> CONSUMED = new HashSet<>();
@@ -46,6 +47,49 @@ public final class GlbInteraction {
     /** key 编码：摆放 id + 动画名（动画名一般不含冒号） */
     private static String key(int placementId, String animName) {
         return placementId + ":" + animName;
+    }
+
+    // ===================== 会话状态生命周期（B1 收尾·跨存档残留修复） =====================
+
+    /**
+     * 清空全部会话交互状态（开状态 + 已消耗），返回被清掉的条目数。
+     *
+     * <p>⚠️ 必须在**世界会话边界**调用（服务端启动 / 新存档）。原因：OPEN_PARTS / CONSUMED 是
+     * 静态内存态、key 只含「摆放 id」，而摆放 id 是**每个存档各自从 1 开始**分配的。
+     * 同一游戏进程内退出存档 A 再进存档 B 时，A 里点过的 `摆放#1@某动画`（开状态）与
+     * `摆放#1:某部件`（已消耗）会直接命中 B 的同 id 摆放：
+     * <ul>
+     *   <li>{@code isOpen} → spawnColliders 直接**跳过**该动态盒（表现：模型摆出来了但点不动）</li>
+     *   <li>{@code isConsumed} → 右键恒走"已消耗"分支（表现：点了没反应 + 提示已消耗）</li>
+     * </ul>
+     * 实测症状：同一会话连开两个存档，摆同一模型，一份能触发一份不能（经验：SKILL §7-12）。
+     */
+    public static int clearAll() {
+        int n = OPEN_PARTS.size() + CONSUMED.size();
+        OPEN_PARTS.clear();
+        CONSUMED.clear();
+        return n;
+    }
+
+    /**
+     * 清掉某个摆放占用的全部会话状态（该摆放被 /objremove、/objclear、命令内 `objremove %placement%` 移除时调用）。
+     *
+     * <p>动机同 {@link #clearAll()}：摆放 id 会被后续新摆放复用（allocateId 从最大 id 递增，清空后重摆即复用），
+     * 残留状态会让新摆放"动态盒不生成 / 点不动"。移除摆放时顺手清理，可把残留窗口从"整个游戏进程"缩到"零"。
+     *
+     * @return 被清掉的条目数（0 = 该摆放本来没有残留）
+     */
+    public static int clearPlacement(int placementId) {
+        String prefix = placementId + ":";
+        int before = OPEN_PARTS.size() + CONSUMED.size();
+        OPEN_PARTS.removeIf(k -> k.startsWith(prefix));
+        CONSUMED.removeIf(k -> k.startsWith(prefix));
+        return before - (OPEN_PARTS.size() + CONSUMED.size());
+    }
+
+    /** 当前会话状态条目数（诊断日志用：开状态条目 / 已消耗条目） */
+    public static int[] debugSize() {
+        return new int[]{OPEN_PARTS.size(), CONSUMED.size()};
     }
 
     /** 精确查询：某摆放的某动画是否处于打开状态 */
