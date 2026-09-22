@@ -1,6 +1,7 @@
 package com.levodoubt.objuilder.client;
 
 import java.util.List;
+import java.util.Optional;
 
 import com.levodoubt.objuilder.PolarisObjuilder;
 import com.levodoubt.objuilder.entity.ColliderEntity;
@@ -11,7 +12,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -20,23 +20,32 @@ import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
- * 点击辅助（2.1.16）：右键时若**原版准星没命中交互盒**，用更宽容的射线再找一次。
+ * 交互盒拾取（2.1.17）：右键我们自己的碰撞盒时，用「宽容射线 + 精确命中优先 / 最具体盒优先」自己判定一次。
  *
- * <p><b>为什么需要</b>：原版实体拾取 = 客户端 `GameRenderer.pick` 用
- * `getBoundingBox().inflate(getPickRadius())` 且只在 `entityInteractionRange()`（默认 3 格）内生效；
- * 服务端还会再查一次 3 格。模型里的交互盒往往薄而长（如步枪盒 1.83×0.28×0.085 m），
- * 玩家站得稍远或瞄得稍偏就"点了没反应"。
+ * <p><b>为什么不用原版拾取</b>：原版判定盒 = {@code getBoundingBox().inflate(getPickRadius())}，
+ * 且必须在 {@code entityInteractionRange()}（默认 3 格）内、服务端还会再查一次 3 格。
+ * 而 0.3.1（e037bfc）为修"大盒膨胀吞掉 2cm 子弹盒"，把 {@code getPickRadius()} 从
+ * {@code min(4, size*0.5+0.25)}（步枪盒 0.615 m）收窄到 {@code min(0.3, 0.1+size*0.05)}（0.136 m）
+ * —— 可点区域缩掉约 0.5 m，导致"大致瞄着枪身"点不中（用户实测：老版本没问题、新版偶尔才成功）。
  *
- * <p><b>行为</b>：本类只在"原版没命中我们的盒"时介入 —— 命中后取消原版处理（避免同一次点击触发两次）、
- * 发 {@link ColliderClickPayload} 给服务端、挥手。原版已命中的情况完全交给原版，行为不变。
+ * <p><b>现在的规则</b>（既恢复手感、又不吞盒）：
+ * <ol>
+ *   <li>射线与 {@code inflate(min(0.6, 0.25 + size*0.35))} 求交，收集全部候选；</li>
+ *   <li>若其中有"射线直接命中**未膨胀**盒"的候选 → 取**未膨胀体积最小**者（精确瞄准 = 最具体部件，
+ *       子弹盒赢过枪盒/桌子）；</li>
+ *   <li>否则取**最近**的膨胀命中（近失手也能点中，与原版语义一致）。</li>
+ * </ol>
+ *
+ * <p>命中我们的盒 → 取消原版处理（避免双重触发）+ 发 {@link ColliderClickPayload} + 挥手；
+ * 没命中 → 什么都不做，原版路径照旧（箱子/门/其它模组不受影响）。
  */
 @EventBusSubscriber(modid = PolarisObjuilder.MODID, value = Dist.CLIENT, bus = EventBusSubscriber.Bus.GAME)
 public final class ColliderClickAssist {
-    /** 辅助射线长度（格）：比原版 3 格放宽；服务端按同一数值校验 */
+    /** 射线长度（格）：服务端按同一数值校验 */
     private static final double REACH = 4.5;
-    /** 最小额外膨胀（格）：标记盒普遍很薄，给一点宽容度 */
-    private static final double MIN_INFLATE = 0.15;
-    /** 诊断日志节流 */
+    /** 膨胀下限/上限（格） */
+    private static final double MIN_INFLATE = 0.25;
+    private static final double MAX_INFLATE = 0.6;
     private static long lastLogMs = 0L;
 
     private ColliderClickAssist() {
@@ -48,8 +57,6 @@ public final class ColliderClickAssist {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null || mc.gameMode == null) return;
         if (mc.player.isSpectator()) return;
-        // 原版已命中我们的交互盒 → 交给原版（避免重复触发）
-        if (mc.hitResult instanceof EntityHitResult ehr && ehr.getEntity() instanceof ColliderEntity) return;
         ColliderEntity hit = pick(mc);
         if (hit == null) return;
         event.setCanceled(true);
@@ -59,31 +66,42 @@ public final class ColliderClickAssist {
         long now = Util.getMillis();
         if (now - lastLogMs > 1000L) {
             lastLogMs = now;
-            PolarisObjuilder.LOGGER.info("[Objuilder][点击辅助] 原版未命中 → 辅助射线命中部件 '{}'（摆放 #{}）",
+            PolarisObjuilder.LOGGER.info("[Objuilder][交互拾取] 命中部件 '{}'（摆放 #{}）",
                     hit.getPartName(), hit.getPlacementId());
         }
     }
 
-    /** 沿视线做一次"交互盒优先"的宽容射线检测；返回最近的候选（没有则 null） */
+    /** 宽容射线拾取：精确命中优先（取最具体盒），否则取最近膨胀命中 */
     private static ColliderEntity pick(Minecraft mc) {
         Entity cam = mc.getCameraEntity() != null ? mc.getCameraEntity() : mc.player;
         Vec3 eye = cam.getEyePosition(1.0f);
         Vec3 end = eye.add(cam.getViewVector(1.0f).scale(REACH));
-        AABB search = new AABB(eye, end).inflate(1.0);
+        AABB search = new AABB(eye, end).inflate(MAX_INFLATE + 0.5);
         List<ColliderEntity> cands = mc.level.getEntitiesOfClass(ColliderEntity.class, search,
                 ce -> ce.isPickable());
-        ColliderEntity best = null;
-        double bestD2 = Double.MAX_VALUE;
+        ColliderEntity exactBest = null;   // 直接命中未膨胀盒 → 体积最小者
+        double exactVol = Double.MAX_VALUE;
+        ColliderEntity nearBest = null;    // 仅命中膨胀盒 → 最近者
+        double nearD2 = Double.MAX_VALUE;
         for (ColliderEntity ce : cands) {
-            AABB box = ce.getBoundingBox().inflate(Math.max(MIN_INFLATE, ce.getPickRadius()));
-            java.util.Optional<Vec3> hit = box.clip(eye, end);
-            if (hit.isEmpty()) continue;
-            double d2 = eye.distanceToSqr(hit.get());
-            if (d2 < bestD2) {
-                bestD2 = d2;
-                best = ce;
+            AABB raw = ce.getBoundingBox();
+            double inflate = Math.max(MIN_INFLATE, Math.min(MAX_INFLATE, 0.25 + raw.getSize() * 0.35));
+            AABB fat = raw.inflate(inflate);
+            Optional<Vec3> hitFat = fat.clip(eye, end);
+            if (hitFat.isEmpty()) continue;
+            double d2 = eye.distanceToSqr(hitFat.get());
+            if (d2 < nearD2) {
+                nearD2 = d2;
+                nearBest = ce;
+            }
+            if (raw.clip(eye, end).isPresent()) {
+                double vol = raw.getXsize() * raw.getYsize() * raw.getZsize();
+                if (vol < exactVol) {
+                    exactVol = vol;
+                    exactBest = ce;
+                }
             }
         }
-        return best;
+        return exactBest != null ? exactBest : nearBest;
     }
 }
