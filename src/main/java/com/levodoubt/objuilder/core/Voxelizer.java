@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.core;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -140,7 +142,7 @@ public class Voxelizer {
         long volume = (long) (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
         List<int[]> interior;
         if (volume > 1_000_000L) {
-            PolarisObjuilder.LOGGER.info("[Voxelizer] 包围盒体积 {} 超过阈值，跳过内部格检测", volume);
+            ObjDebug.info("[Voxelizer] 包围盒体积 {} 超过阈值，跳过内部格检测", volume);
             interior = new ArrayList<>();
         } else {
             interior = findInteriorCells(cellTris.keySet(), minX, maxX, minY, maxY, minZ, maxZ);

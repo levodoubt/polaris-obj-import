@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.client;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.io.File;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -101,12 +103,12 @@ public class PlacementModelLoader {
         if (modelId != null) {
             GlbAnimationManager.remove(modelId);
             DomainModelCache.release(modelId);
-            PolarisObjuilder.LOGGER.info(
+            ObjDebug.info(
                     "[Objuilder] 已释放摆放缓存: pid={} → modelId {}（剩余缓存 {}）",
                     placementId, modelId, DomainModelCache.size());
         } else if (LOADING.contains(k)) {
             RELEASED.add(k);
-            PolarisObjuilder.LOGGER.info("[Objuilder] 摆放 pid={} 加载中，标记释放（完成后丢弃）", placementId);
+            ObjDebug.info("[Objuilder] 摆放 pid={} 加载中，标记释放（完成后丢弃）", placementId);
         }
     }
 
@@ -122,7 +124,7 @@ public class PlacementModelLoader {
         File file = resolveRefFile(ref);
         if (file == null || !file.exists()) {
             FAILED.add(k);
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 摆放模型引用未找到: {} ({})",
+            ObjDebug.warn("[Objuilder] 摆放模型引用未找到: {} ({})",
                     ref, file != null ? file.getAbsolutePath() : "无法解析路径");
             return;
         }
@@ -135,7 +137,7 @@ public class PlacementModelLoader {
         } else {
             FAILED.add(k);
             LOADING.remove(k);
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 不支持的模型格式: {}", ref);
+            ObjDebug.warn("[Objuilder] 不支持的模型格式: {}", ref);
         }
     }
 
@@ -208,7 +210,7 @@ public class PlacementModelLoader {
                     m.emissiveFactor != null ? java.util.Arrays.toString(m.emissiveFactor) : "null",
                     m.doubleSided, aFlag));
         }
-        PolarisObjuilder.LOGGER.info("[Objuilder] glb 材质解析 modelId={}: {}  半透明(贴图alpha)材质={}",
+        ObjDebug.info("[Objuilder] glb 材质解析 modelId={}: {}  半透明(贴图alpha)材质={}",
                 modelId, dbg, texturedTranslucent);
         return modelId;
     }
@@ -267,7 +269,7 @@ public class PlacementModelLoader {
             if (modelId >= 0) {
                 GlbAnimationManager.remove(modelId);
                 DomainModelCache.release(modelId);
-                PolarisObjuilder.LOGGER.info(
+                ObjDebug.info(
                         "[Objuilder] 摆放 pid={} 加载完成但已释放 → 丢弃 modelId {}（剩余缓存 {}）",
                         placementId, modelId, DomainModelCache.size());
             }
@@ -276,11 +278,11 @@ public class PlacementModelLoader {
         }
         if (modelId >= 0) {
             PID_TO_MODEL_ID.put(placementId, modelId);
-            PolarisObjuilder.LOGGER.info("[Objuilder] 摆放模型已加载: pid={} ({} → modelId {})",
+            ObjDebug.info("[Objuilder] 摆放模型已加载: pid={} ({} → modelId {})",
                     placementId, ref, modelId);
         } else {
             FAILED.add(k);
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 摆放模型几何为空: pid={} ({})", placementId, ref);
+            ObjDebug.warn("[Objuilder] 摆放模型几何为空: pid={} ({})", placementId, ref);
         }
         LOADING.remove(k);
     }

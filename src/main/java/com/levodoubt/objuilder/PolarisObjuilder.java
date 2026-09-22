@@ -89,6 +89,8 @@ public class PolarisObjuilder {
      * 检测 storycore 存在才注册剧情动作，无 storycore 时 B1 独立可用。
      */
     private static void onCommonSetup(FMLCommonSetupEvent event) {
+        // 调试总开关先落地（配置此时已加载）：/objdebug 的持久值在这里生效，双端一致
+        com.levodoubt.objuilder.debug.ObjDebug.syncFromConfig();
         com.levodoubt.objuilder.storycore.StoryCoreSupport.init();
     }
 }

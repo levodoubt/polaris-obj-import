@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.core;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -352,12 +354,12 @@ public class GlbModel {
             }
         }
         if (!colliders.isEmpty()) {
-            PolarisObjuilder.LOGGER.info("[Glb] '{}' 解析到 {} 个碰撞盒: {}",
+            ObjDebug.info("[Glb] '{}' 解析到 {} 个碰撞盒: {}",
                     name, colliders.size(),
                     colliders.stream().map(GlbModel::describeCollider).toList());
         }
         if (!lights.isEmpty()) {
-            PolarisObjuilder.LOGGER.info("[Glb] '{}' 解析到 {} 个光源盒: {}",
+            ObjDebug.info("[Glb] '{}' 解析到 {} 个光源盒: {}",
                     name, lights.size(), lights.stream().map(l -> l.name).toList());
         }
     }
@@ -378,7 +380,7 @@ public class GlbModel {
         ColliderName cn = n.meshes.length > 0 ? ColliderName.parse(n.name) : null;
         if (cn != null) {
             if (cn.invalidOrder()) {
-                PolarisObjuilder.LOGGER.warn(
+                ObjDebug.warn(
                         "[Glb] 碰撞盒名 '{}' 的 $ 位于 @ 之前（非法顺序）→ $ 段已忽略，按无命令处理", n.name);
             }
             float[] mm = nodeAabb(n, world);

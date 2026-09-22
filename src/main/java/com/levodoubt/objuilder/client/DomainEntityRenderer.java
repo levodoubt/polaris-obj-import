@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.client;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import com.levodoubt.objuilder.entity.DomainEntity;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -45,7 +47,7 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
                 PlacementModelLoader.requestLoad(ref, entity.getPlacementId()); // 幂等；加载完成后下一帧自然出现
                 if (!warnedMissing) {
                     warnedMissing = true;
-                    com.levodoubt.objuilder.PolarisObjuilder.LOGGER.warn(
+                    ObjDebug.warn(
                             "[Objuilder] 摆放模型几何未就绪 ref={} pid={}（异步加载中或失败）",
                             ref, entity.getPlacementId());
                 }
@@ -73,7 +75,7 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
             logShadowDiagnostic(modelId);
         } else if (!shadowDiagMainLogged) {
             shadowDiagMainLogged = true;
-            com.levodoubt.objuilder.PolarisObjuilder.LOGGER.info(
+            ObjDebug.info(
                     "[Objuilder][阴影诊断] 主 pass 首次绘制 modelId={} · Iris 绑定={}（此后每 2 秒在阴影 pass 内打印一行）",
                     modelId, ShadowPassDetect.bindStatus());
         }
@@ -93,7 +95,7 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
         if (mesh == null || mesh.vertexCount == 0) {
             if (!warnedMissing) {
                 warnedMissing = true;
-                com.levodoubt.objuilder.PolarisObjuilder.LOGGER.warn(
+                ObjDebug.warn(
                         "[Objuilder] 域几何缺失 modelId={} cacheSize={}",
                         modelId, DomainModelCache.size());
             }
@@ -206,7 +208,7 @@ public class DomainEntityRenderer extends EntityRenderer<DomainEntity> {
         int entities = ShadowPassDetect.renderedShadowEntities();
         int flag = ShadowPassDetect.shouldRenderEntities();
         float mul = ShadowPassDetect.entityShadowDistanceMultiplier();
-        com.levodoubt.objuilder.PolarisObjuilder.LOGGER.info(
+        ObjDebug.info(
                 "[Objuilder][阴影诊断] 阴影 pass 正在绘制 modelId={} 顶点={} 材质run={} ‖ Iris: 绑定={} 阴影图={} 视距={} 实体阴影开关={} 实体距离倍率={} 本帧阴影实体数={}",
                 modelId,
                 mesh == null ? -1 : mesh.vertexCount,

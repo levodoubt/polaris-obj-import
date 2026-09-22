@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.animation;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -79,7 +81,7 @@ public class GlbAnimationController {
             float animDur = 0;
             for (GlbModel.Channel ch : anim.channels) {
                 if (ch.times.length == 0 || ch.values.length == 0) {
-                    PolarisObjuilder.LOGGER.warn("[Glb] 动画 '{}' channel(node{} {}) 无关键帧，跳过",
+                    ObjDebug.warn("[Glb] 动画 '{}' channel(node{} {}) 无关键帧，跳过",
                             anim.name, ch.nodeIndex, ch.path);
                     continue;
                 }

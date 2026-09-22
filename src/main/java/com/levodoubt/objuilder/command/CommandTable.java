@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.command;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -137,7 +139,7 @@ public final class CommandTable {
         Path path = file();
         if (!Files.exists(path)) {
             TABLE = Map.of();
-            PolarisObjuilder.LOGGER.info("[Objuilder] 未找到命令映射表 {}（$ 命令键暂不可用）", path);
+            ObjDebug.info("[Objuilder] 未找到命令映射表 {}（$ 命令键暂不可用）", path);
             return new LoadResult(true, 0, 0, "未找到 " + path + "（$ 命令键暂不可用）");
         }
         try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
@@ -146,15 +148,15 @@ public final class CommandTable {
             Map<String, Entry> parsed = parseTable(root, problems);
             TABLE = Collections.unmodifiableMap(parsed);
             for (String p : problems) {
-                PolarisObjuilder.LOGGER.warn("[Objuilder] commands.json: {}", p);
+                ObjDebug.warn("[Objuilder] commands.json: {}", p);
             }
-            PolarisObjuilder.LOGGER.info("[Objuilder] 已加载命令映射表 {}（{} 个键{}）",
+            ObjDebug.info("[Objuilder] 已加载命令映射表 {}（{} 个键{}）",
                     path, parsed.size(), problems.isEmpty() ? "" : "，跳过 " + problems.size() + " 条无效项");
             String msg = "已加载 " + parsed.size() + " 个命令键"
                     + (problems.isEmpty() ? "" : "（跳过 " + problems.size() + " 条无效项，见日志）");
             return new LoadResult(true, parsed.size(), problems.size(), msg);
         } catch (Exception ex) {
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 解析 {} 失败（保留旧表 {} 条）：{}",
+            ObjDebug.warn("[Objuilder] 解析 {} 失败（保留旧表 {} 条）：{}",
                     path, TABLE.size(), ex.toString());
             return new LoadResult(false, TABLE.size(), 0,
                     "解析失败：" + ex.getMessage() + "（已保留旧表 " + TABLE.size() + " 条）");
@@ -268,7 +270,7 @@ public final class CommandTable {
     public static int run(ServerPlayer player, String key, String partName, int placementId, Vec3 center) {
         Entry entry = get(key);
         if (entry == null) {
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 命令键 '{}' 不存在，未执行", key);
+            ObjDebug.warn("[Objuilder] 命令键 '{}' 不存在，未执行", key);
             return -1;
         }
         MinecraftServer server = player.getServer();
@@ -292,14 +294,14 @@ public final class CommandTable {
                 server.getCommands().performPrefixedCommand(source, command);
             } catch (Exception ex) {
                 // performCommand 内部已吞掉大部分异常，这里是最后兜底（防模组自身崩服）
-                PolarisObjuilder.LOGGER.warn("[Objuilder] 命令键 '{}' 第 {}/{} 条执行异常：{}（命令：'{}'）",
+                ObjDebug.warn("[Objuilder] 命令键 '{}' 第 {}/{} 条执行异常：{}（命令：'{}'）",
                         key, i + 1, cmds.size(), ex.toString(), command);
                 return -1;
             }
             if (!capturedSuccess[0]) {
                 // 未 success（解析失败 / execute if 条件不成立被判失败）→ 中止后续命令，整体视为未生效
                 // → 返回 0 → consume="result" 回滚消耗。守卫惯用法（cmds 第一条做条件、第二条删摆件）依赖此中止语义。
-                PolarisObjuilder.LOGGER.warn(
+                ObjDebug.warn(
                         "[Objuilder] 命令键 '{}' 第 {}/{} 条未生效 → 中止后续 {} 条（命令：'{}'；部件 '{}'，摆放 #{}）",
                         key, i + 1, cmds.size(), cmds.size() - i - 1, command, partName, placementId);
                 return 0;
@@ -307,10 +309,10 @@ public final class CommandTable {
             total += capturedResult[0];
         }
         if (cmds.size() == 1) {
-            PolarisObjuilder.LOGGER.info("[Objuilder] 命令键 '{}' → '{}' 返回 {}（部件 '{}'，摆放 #{}）",
+            ObjDebug.info("[Objuilder] 命令键 '{}' → '{}' 返回 {}（部件 '{}'，摆放 #{}）",
                     key, cmds.get(0), total, partName, placementId);
         } else {
-            PolarisObjuilder.LOGGER.info("[Objuilder] 命令键 '{}' → {} 条命令全部生效，返回 {}（部件 '{}'，摆放 #{}）",
+            ObjDebug.info("[Objuilder] 命令键 '{}' → {} 条命令全部生效，返回 {}（部件 '{}'，摆放 #{}）",
                     key, cmds.size(), total, partName, placementId);
         }
         return total;

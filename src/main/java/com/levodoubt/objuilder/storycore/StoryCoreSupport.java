@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.storycore;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import com.levodoubt.objuilder.PolarisObjuilder;
 
 /**
@@ -25,13 +27,13 @@ public final class StoryCoreSupport {
         try {
             Class.forName("com.levodoubt.polarisstorycore.engine.StoryActionRegistry");
             StoryCoreBridge.register(); // 仅 StoryCore 存在时加载该类
-            PolarisObjuilder.LOGGER.info(
+            ObjDebug.info(
                     "[Objuilder] 检测到 StoryCore → 已注册剧情动作 'polarisobjuilder:anim'");
         } catch (ClassNotFoundException e) {
-            PolarisObjuilder.LOGGER.info(
+            ObjDebug.info(
                     "[Objuilder] 未检测到 StoryCore → 跳过剧情联动（B1 独立可用）");
         } catch (Throwable t) {
-            PolarisObjuilder.LOGGER.warn(
+            ObjDebug.warn(
                     "[Objuilder] StoryCore 联动初始化失败（不影响 B1 本体）", t);
         }
     }

@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import com.levodoubt.objuilder.client.GlbAnimationManager;
 import com.levodoubt.objuilder.client.PlacementModelLoader;
 import com.levodoubt.objuilder.entity.ColliderEntity;
@@ -105,10 +107,10 @@ public class PolarisObjuilderNetwork {
         long nowMs = net.minecraft.Util.getMillis();
         if (nowMs - assistWarnAtMs > 1000L) {
             assistWarnAtMs = nowMs;
-            player.displayClientMessage(net.minecraft.network.chat.Component.literal(
-                    "§c[Objuilder] 触发失败：" + reason + "（部件 " + part + " · 摆放 #" + pid + "）"), true);
+            ObjDebug.hint(player, net.minecraft.network.chat.Component.literal(
+                    "§c[Objuilder] 触发失败：" + reason + "（部件 " + part + " · 摆放 #" + pid + "）"));
         }
-        PolarisObjuilder.LOGGER.info("[Objuilder][点击辅助] 拒绝：{}（部件 '{}' 摆放 #{} 实体 #{} 玩家 {}）",
+        ObjDebug.info("[Objuilder][点击辅助] 拒绝：{}（部件 '{}' 摆放 #{} 实体 #{} 玩家 {}）",
                 reason, part, pid, entityId, player.getScoreboardName());
     }
 }

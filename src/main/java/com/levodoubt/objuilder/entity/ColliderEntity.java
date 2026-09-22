@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.entity;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import com.levodoubt.objuilder.GlbInteraction;
 import com.levodoubt.objuilder.PolarisObjuilder;
 import com.levodoubt.objuilder.command.CommandTable;
@@ -340,9 +342,10 @@ public class ColliderEntity extends Entity {
         }
         if (!isPickEnabled()) {
             // 服务端权威：已消耗（客户端可能时序性重发 interact 包）—— 必须给可见原因，否则现场只会看到"点了没反应"
-            player.displayClientMessage(Component.literal("§c[Objuilder] 触发失败：部件已消耗/禁用（"
-                    + getPartName() + " · 摆放 #" + getPlacementId() + "）"), true);
-            PolarisObjuilder.LOGGER.info("[Objuilder][交互] 拒绝：部件 '{}' 摆放 #{} 已消耗/禁用（pickEnabled=false）",
+            // （诊断提示随 /objdebug 开关静默；日志同理）
+            ObjDebug.hint(player, Component.literal("§c[Objuilder] 触发失败：部件已消耗/禁用（"
+                    + getPartName() + " · 摆放 #" + getPlacementId() + "）"));
+            ObjDebug.info("[Objuilder][交互] 拒绝：部件 '{}' 摆放 #{} 已消耗/禁用（pickEnabled=false）",
                     getPartName(), getPlacementId());
             return InteractionResult.PASS;
         }
@@ -352,11 +355,11 @@ public class ColliderEntity extends Entity {
         ServerLevel serverLevel = (ServerLevel) this.level();
         if (cmd != null && !CommandTable.has(cmd)) {
             // 键不存在：不消耗、不静默（否则现场极难排查"点了没反应"）；此处早于动画/状态，故无任何副作用
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 命令键 '{}' 不存在（部件 '{}'，摆放 #{}）→ 未消耗、未改状态",
+            ObjDebug.warn("[Objuilder] 命令键 '{}' 不存在（部件 '{}'，摆放 #{}）→ 未消耗、未改状态",
                     cmd, getPartName(), getPlacementId());
             String part = getPartName();
-            player.displayClientMessage(Component.literal(
-                    "§c[Objuilder] 命令键未配置: " + cmd + (part == null ? "" : "（部件 " + part + "）")), true);
+            ObjDebug.hint(player, Component.literal(
+                    "§c[Objuilder] 命令键未配置: " + cmd + (part == null ? "" : "（部件 " + part + "）")));
             return InteractionResult.SUCCESS;
         }
         // 1) 动画（复用子工程 7 机制）；先记录点击前状态，供命令未生效时回滚（标准 6 / 2.1.14 加固 A）
@@ -376,13 +379,13 @@ public class ColliderEntity extends Entity {
             int result = CommandTable.run(serverPlayer, cmd, getPartName(), getPlacementId(), this.box.getCenter());
             // "未生效"判据：consume="result" 且返回值 <= 0（含 cmds 多命令"任一条失败即中止"返回 0）
             boolean ineffective = CommandTable.mode(cmd) == CommandTable.Consume.RESULT && result <= 0;
-            PolarisObjuilder.LOGGER.info("[Objuilder][交互] 部件 '{}' 摆放 #{} 命令 {} → 返回 {}（{}）",
+            ObjDebug.info("[Objuilder][交互] 部件 '{}' 摆放 #{} 命令 {} → 返回 {}（{}）",
                     getPartName(), getPlacementId(), cmd, result, ineffective ? "未生效" : "已生效");
             if (ineffective) {
                 // 加固 B：失败必须给玩家可见反馈（否则现场只能翻日志）
                 String why = getPartName() == null ? cmd : cmd + "（部件 " + getPartName() + "）";
-                player.displayClientMessage(Component.literal(
-                        "§c[Objuilder] 命令未生效，本次交互已忽略：" + why), true);
+                ObjDebug.hint(player, Component.literal(
+                        "§c[Objuilder] 命令未生效，本次交互已忽略：" + why));
                 if (consume) {
                     // 加固 A：连动画 toggle 一起回滚到点击前状态（否则"动画已播/状态=开 但盒还活着"，
                     // 玩家再点一下会变成 toggle RESET —— 实测表现为"枪掉下来又飞回去"）

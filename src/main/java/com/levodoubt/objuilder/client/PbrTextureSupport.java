@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.client;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import com.levodoubt.objuilder.PolarisObjuilder;
 
 /**
@@ -26,10 +28,10 @@ public class PbrTextureSupport {
             Class.forName("net.irisshaders.iris.pbr.loader.PBRTextureLoaderRegistry");
             irisAvailable = true;
             IrisPbrBridge.register();
-            PolarisObjuilder.LOGGER.info("[Objuilder] Iris 检测到 → PBR 光影适配已启用（法线/labPBR specular）");
+            ObjDebug.info("[Objuilder] Iris 检测到 → PBR 光影适配已启用（法线/labPBR specular）");
         } catch (Throwable t) {
             irisAvailable = false;
-            PolarisObjuilder.LOGGER.info("[Objuilder] 未检测到 Iris → PBR 光影适配跳过（无光影保持现状）");
+            ObjDebug.info("[Objuilder] 未检测到 Iris → PBR 光影适配跳过（无光影保持现状）");
         }
     }
 }

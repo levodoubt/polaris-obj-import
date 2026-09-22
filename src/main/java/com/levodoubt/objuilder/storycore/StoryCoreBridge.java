@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.storycore;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.util.Map;
 
 import com.levodoubt.objuilder.GlbInteraction;
@@ -28,7 +30,7 @@ public final class StoryCoreBridge {
             Map<String, String> params = ctx.params();
             String name = params == null ? null : params.get("name");
             if (name == null || name.isBlank()) {
-                PolarisObjuilder.LOGGER.warn(
+                ObjDebug.warn(
                         "[Objuilder] 剧情动作 'polarisobjuilder:anim' 缺少 name 参数 @ node '{}'",
                         ctx.node().id());
                 return;
@@ -42,7 +44,7 @@ public final class StoryCoreBridge {
             GlbAnimPayload payload = new GlbAnimPayload(GlbAnimPayload.ACT_PLAY, name,
                     (byte) pm.ordinal(), gameTime, 1.0f, -1); // 剧情 action 按动画名全局触发
             int affected = GlbInteraction.setOpen(level, name, true, payload);
-            PolarisObjuilder.LOGGER.info(
+            ObjDebug.info(
                     "[Objuilder] 剧情动作 'polarisobjuilder:anim' → 动画 '{}' ({}), 碰撞盒 {} 个",
                     name, mode, affected);
         });

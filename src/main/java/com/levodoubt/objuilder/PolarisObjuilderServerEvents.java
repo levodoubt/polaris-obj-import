@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -123,18 +125,73 @@ public class PolarisObjuilderServerEvents {
                         .then(Commands.argument("key", StringArgumentType.word())
                                 .executes(ctx -> objcmdTest(ctx.getSource(),
                                         StringArgumentType.getString(ctx, "key"))))));
+        // /objdebug（v0.4.3）：调试输出总开关——false 隐藏本模组一切调试输出（诊断日志 + 屏上诊断提示）
+        dispatcher.register(Commands.literal("objdebug")
+                .executes(ctx -> objdebugStatus(ctx.getSource()))
+                .then(Commands.literal("true").executes(ctx -> objdebugSet(ctx.getSource(), true)))
+                .then(Commands.literal("on").executes(ctx -> objdebugSet(ctx.getSource(), true)))
+                .then(Commands.literal("false").executes(ctx -> objdebugSet(ctx.getSource(), false)))
+                .then(Commands.literal("off").executes(ctx -> objdebugSet(ctx.getSource(), false))));
+    }
+
+    // ===================== /objdebug：调试输出总开关（v0.4.3） =====================
+
+    /** /objdebug（无参）：显示当前状态与用法 */
+    private static int objdebugStatus(CommandSourceStack source) {
+        boolean on = ObjDebug.on();
+        source.sendSuccess(() -> Component.literal(String.format(
+                "§7[Objuilder] 调试输出 = %s§7｜/objdebug true|false|on|off 切换",
+                on ? "§atrue（全部诊断输出可见）" : "§cfalse（一切调试输出已隐藏）")), false);
+        source.sendSuccess(() -> Component.literal(
+                "§8  · 控制台：本模组的 info/warn 诊断日志（[Objuilder]/[Glb]/阴影诊断/交互拾取/摆放碰撞盒…）"), false);
+        source.sendSuccess(() -> Component.literal(
+                "§8  · 屏上：actionbar 诊断提示（触发失败：已消耗/不可交互/准星偏离 N 格 等）"), false);
+        source.sendSuccess(() -> Component.literal(
+                "§8  · 不受影响：error 级报错（含异常栈）与指令回显（/objplace 等）"), false);
+        source.sendSuccess(() -> Component.literal(
+                "§8  · 持久化：config/polarisobjbuilder-common.toml → debug"), false);
+        return 1;
+    }
+
+    /** /objdebug true|false|on|off：切换 + 落盘 + 回显（单机下客户端与集成服务端同 JVM → 两端同时静默） */
+    private static int objdebugSet(CommandSourceStack source, boolean value) {
+        boolean changed = ObjDebug.on() != value;
+        ObjDebug.set(value);
+        String persistErr = null;
+        try {
+            Config.saveDebug(value);
+        } catch (Throwable t) {
+            persistErr = t.toString();
+        }
+        final String err = persistErr;
+        source.sendSuccess(() -> Component.literal(String.format(
+                "§a[Objuilder] 调试输出 → %s%s%s",
+                value ? "§atrue" : "§cfalse",
+                value ? "§a（诊断日志与屏上诊断提示恢复输出）" : "§a（一切调试输出已隐藏；error 级报错与指令回显不受影响）",
+                err == null ? "" : "§c｜写入配置失败：" + err)), true);
+        // 开关本身的变化必须留痕（不走 ObjDebug，否则"关掉调试"这件事在日志里查不到）
+        PolarisObjuilder.LOGGER.info("[Objuilder] 调试输出开关 {}（{}）{}",
+                value ? "ON" : "OFF", changed ? "本次切换" : "幂等设置",
+                err == null ? "" : "，写入配置失败：" + err);
+        if (changed && value) {
+            ObjDebug.info("[Objuilder] 调试输出已恢复：以下为本模组诊断日志");
+        }
+        return 1;
     }
 
     /** 服务端启动完成：加载命令映射表 + 按 SavedData 记录重新 spawn 摆放实体 + 碰撞体（持久化恢复，重进游戏模型自动出现） */
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event) {
         MinecraftServer server = event.getServer();
+        // 世界会话边界：调试开关按配置再同步一次（配置可能被改过，指令外的改动也要生效）
+        ObjDebug.syncFromConfig();
         // 世界会话边界：清空交互内存态（OPEN_PARTS / CONSUMED）。
         // 必要性：两者是静态内存态且 key 只含"摆放 id"，而摆放 id 每个存档各自从 1 开始分配——
         // 同一游戏进程内退出存档 A 再进存档 B，A 里点过的 `摆放#1@动画`（开）与 `摆放#1:部件`（已消耗）
         // 会命中 B 的同 id 摆放，导致动态碰撞盒被跳过（点不动）或右键恒提示"已消耗"。
         int stale = GlbInteraction.clearAll();
         if (stale > 0) {
+            // 状态残留属"异常事件"（正常路径下 objremove 已按 id 清干净）→ 走直连 LOGGER，不受调试开关影响
             PolarisObjuilder.LOGGER.info("[Objuilder] 世界会话开始 → 已重置交互状态（清理残留 {} 条：开状态 + 已消耗）", stale);
         }
         // 子工程 8：命令映射表（commands.json）——$ 命令键的键值对在这里进内存
@@ -187,7 +244,7 @@ public class PolarisObjuilderServerEvents {
             restoredColliders += spawned.size();
         }
         if (restored > 0 || restoredColliders > 0 || backfilled > 0) {
-            PolarisObjuilder.LOGGER.info("[Objuilder] 已恢复 {} 个摆放模型、{} 个碰撞体（SavedData）；回填 {} 个碰撞体摆放 id",
+            ObjDebug.info("[Objuilder] 已恢复 {} 个摆放模型、{} 个碰撞体（SavedData）；回填 {} 个碰撞体摆放 id",
                     restored, restoredColliders, backfilled);
         }
     }
@@ -314,7 +371,7 @@ public class PolarisObjuilderServerEvents {
         // 跨存档/跨重摆状态残留修复：摆放 id 会被新摆放复用，移除时清掉它在 OPEN_PARTS/CONSUMED 里的键
         int stale = GlbInteraction.clearPlacement(id);
         if (stale > 0) {
-            PolarisObjuilder.LOGGER.info("[Objuilder] 摆放 #{} 移除 → 清理交互状态 {} 条（开状态/已消耗）", id, stale);
+            ObjDebug.info("[Objuilder] 摆放 #{} 移除 → 清理交互状态 {} 条（开状态/已消耗）", id, stale);
         }
         // 事项 1/4：广播客户端释放该摆放独立的几何/纹理缓存
         PacketDistributor.sendToAllPlayers(new CacheReleasePayload(p.id()));
@@ -341,7 +398,7 @@ public class PolarisObjuilderServerEvents {
             PacketDistributor.sendToAllPlayers(new CacheReleasePayload(p.id()));
         }
         if (!all.isEmpty()) {
-            PolarisObjuilder.LOGGER.info("[Objuilder] 已清空全部摆放 → 广播释放 {} 个摆放缓存", all.size());
+            ObjDebug.info("[Objuilder] 已清空全部摆放 → 广播释放 {} 个摆放缓存", all.size());
         }
         int cleared = removed;
         source.sendSuccess(() -> Component.literal(
@@ -453,7 +510,7 @@ public class PolarisObjuilderServerEvents {
         try {
             return GlbParser.parse(f).colliders;
         } catch (Exception e) {
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 解析碰撞盒失败: {} ({})", ref, e.toString());
+            ObjDebug.warn("[Objuilder] 解析碰撞盒失败: {} ({})", ref, e.toString());
             return List.of();
         }
     }
@@ -514,7 +571,7 @@ public class PolarisObjuilderServerEvents {
                 skipped++;
                 // 必须显式打印：动态盒被跳过 = 该部件在游戏里"根本没有交互载体"，
                 // 现场表现为"模型看得见但点不动"，而碰撞体数量正常也不报错，无从排查（经验：SKILL §7-12）
-                PolarisObjuilder.LOGGER.info(
+                ObjDebug.info(
                         "[Objuilder] 摆放 #{} 跳过动态碰撞体 '{}'@{}（该摆放该动画处于「开」状态 → 不生成盒）",
                         p.id(), c.name, c.animBinding);
                 continue;
@@ -531,7 +588,7 @@ public class PolarisObjuilderServerEvents {
                     c.hasCommand() ? "$" + c.cmdKey : "",
                     box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ, c.collides));
         }
-        PolarisObjuilder.LOGGER.info("[Objuilder] 摆放 #{} 生成碰撞体 {} 个{}（scale={} yaw={} pos=({},{},{})）:{}",
+        ObjDebug.info("[Objuilder] 摆放 #{} 生成碰撞体 {} 个{}（scale={} yaw={} pos=({},{},{})）:{}",
                 p.id(), uuids.size(), skipped > 0 ? "（跳过动态盒 " + skipped + " 个）" : "",
                 p.scale(), p.yaw(), p.x(), p.y(), p.z(), sb);
         return uuids;
@@ -549,7 +606,7 @@ public class PolarisObjuilderServerEvents {
         try {
             return GlbParser.parse(f).lights;
         } catch (Exception e) {
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 解析光源盒失败: {} ({})", ref, e.toString());
+            ObjDebug.warn("[Objuilder] 解析光源盒失败: {} ({})", ref, e.toString());
             return List.of();
         }
     }
@@ -594,7 +651,7 @@ public class PolarisObjuilderServerEvents {
                 BlockPos.containing(box.minX, box.minY, box.minZ),
                 BlockPos.containing(box.maxX - 1.0E-4, box.maxY - 1.0E-4, box.maxZ - 1.0E-4))) {
             if (placed >= 512) {
-                PolarisObjuilder.LOGGER.warn("[Objuilder] light: 盒超过 512 格，已截断");
+                ObjDebug.warn("[Objuilder] light: 盒超过 512 格，已截断");
                 break;
             }
             BlockState st = level.getBlockState(bp);

@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.client;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -144,7 +146,7 @@ public class GlbAnimationManager {
                     if (modelId != null) {
                         trigger(modelId, payload.name(), mode, startTime, payload.speed());
                     } else {
-                        PolarisObjuilder.LOGGER.warn("[Glb] 触发动画 '{}' 未找到摆放 pid={}（可能未加载/已释放）",
+                        ObjDebug.warn("[Glb] 触发动画 '{}' 未找到摆放 pid={}（可能未加载/已释放）",
                                 payload.name(), payload.placementId());
                     }
                 } else {
@@ -165,7 +167,7 @@ public class GlbAnimationManager {
                     resetByName(payload.name());
                 }
             }
-            default -> PolarisObjuilder.LOGGER.warn("[Glb] 未知动画控制 action: {}", payload.action());
+            default -> ObjDebug.warn("[Glb] 未知动画控制 action: {}", payload.action());
         }
     }
 
@@ -201,11 +203,11 @@ public class GlbAnimationManager {
                                float startTime, float speed) {
         AnimatedModel am = MODELS.get(modelId);
         if (am == null) {
-            PolarisObjuilder.LOGGER.warn("[Glb] 触发动画失败：modelId {} 未注册", modelId);
+            ObjDebug.warn("[Glb] 触发动画失败：modelId {} 未注册", modelId);
             return;
         }
         if (!am.anim.play(name, mode, startTime, speed)) {
-            PolarisObjuilder.LOGGER.warn("[Glb] modelId {} 无动画 '{}'", modelId, name);
+            ObjDebug.warn("[Glb] modelId {} 无动画 '{}'", modelId, name);
         } else {
             am.needsRebuild = true;
         }
@@ -230,7 +232,7 @@ public class GlbAnimationManager {
             }
         }
         if (!hit) {
-            PolarisObjuilder.LOGGER.warn("[Glb] 触发动画 '{}' 未匹配任何已导入模型", name);
+            ObjDebug.warn("[Glb] 触发动画 '{}' 未匹配任何已导入模型", name);
         }
     }
 
@@ -245,7 +247,7 @@ public class GlbAnimationManager {
             }
         }
         if (!hit) {
-            PolarisObjuilder.LOGGER.warn("[Glb] 停止动画 '{}' 未匹配任何已导入模型", name);
+            ObjDebug.warn("[Glb] 停止动画 '{}' 未匹配任何已导入模型", name);
         }
     }
 
@@ -260,7 +262,7 @@ public class GlbAnimationManager {
             }
         }
         if (!hit) {
-            PolarisObjuilder.LOGGER.warn("[Glb] 重置动画 '{}' 未匹配任何已导入模型", name);
+            ObjDebug.warn("[Glb] 重置动画 '{}' 未匹配任何已导入模型", name);
         }
     }
 }

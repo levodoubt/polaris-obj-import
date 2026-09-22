@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.client;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -63,7 +65,7 @@ public final class ColliderClickAssist {
         long now = Util.getMillis();
         if (now - lastLogMs > 1000L) {
             lastLogMs = now;
-            PolarisObjuilder.LOGGER.info("[Objuilder][交互拾取] 命中部件 '{}'（摆放 #{}，实体 #{}）",
+            ObjDebug.info("[Objuilder][交互拾取] 命中部件 '{}'（摆放 #{}，实体 #{}）",
                     hit.getPartName(), hit.getPlacementId(), hit.getId());
         }
     }
@@ -110,8 +112,8 @@ public final class ColliderClickAssist {
         } else {
             msg = String.format("§e[Objuilder] 未触发：准星离部件 '%s' 约 %.2f 格（摆放 #%d）", part, nearestOff, pid);
         }
-        mc.player.displayClientMessage(Component.literal(msg), true);
-        PolarisObjuilder.LOGGER.info(
+        ObjDebug.hint(mc.player, Component.literal(msg));
+        ObjDebug.info(
                 "[Objuilder][交互拾取] 未命中：eye=[{},{},{}] 视线终点=[{},{},{}] 附近交互盒 {} 个:{}",
                 fmt(eye.x), fmt(eye.y), fmt(eye.z), fmt(end.x), fmt(end.y), fmt(end.z),
                 nearCount, dump.length() == 0 ? " 无" : dump);

@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.command;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
@@ -269,14 +271,14 @@ public class ObjImportCommand {
                         .apply(ResourceLocation.fromNamespaceAndPath("minecraft", "block/white_concrete"));
                 NativeImage texture = loadTexturePath(data.texturePath());
                 PieceModelCache.bake(data.geometry(), sprite, texture);
-                PolarisObjuilder.LOGGER.info("[Objuilder] schematic 几何已烘焙: {} 族",
+                ObjDebug.info("[Objuilder] schematic 几何已烘焙: {} 族",
                         data.geometry().size());
             } else {
-                PolarisObjuilder.LOGGER.warn("[Objuilder] schematic 无几何数据，子片显示为占位");
+                ObjDebug.warn("[Objuilder] schematic 无几何数据，子片显示为占位");
             }
 
             // 诊断日志：打印 sparse 坐标范围 + pieceId 范围
-            PolarisObjuilder.LOGGER.info("[Objuilder] schematic 尺寸 {}x{}x{} · 稀疏 {} 条 · 几何 {} 族",
+            ObjDebug.info("[Objuilder] schematic 尺寸 {}x{}x{} · 稀疏 {} 条 · 几何 {} 族",
                     data.width(), data.height(), data.length(), data.sparsePieceId().length,
                     data.geometry() != null ? data.geometry().size() : 0);
             int[] mmx = {Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE};
@@ -287,7 +289,7 @@ public class ObjImportCommand {
                 mmx[4] = Math.min(mmx[4], data.sparseZ()[i]); mmx[5] = Math.max(mmx[5], data.sparseZ()[i]);
                 pmn = Math.min(pmn, data.sparsePieceId()[i]); pmx = Math.max(pmx, data.sparsePieceId()[i]);
             }
-            PolarisObjuilder.LOGGER.info("[Objuilder] sparse 坐标范围 X[{}..{}] Y[{}..{}] Z[{}..{}] · pieceId[{}..{}]",
+            ObjDebug.info("[Objuilder] sparse 坐标范围 X[{}..{}] Y[{}..{}] Z[{}..{}] · pieceId[{}..{}]",
                     mmx[0], mmx[1], mmx[2], mmx[3], mmx[4], mmx[5], pmn, pmx);
 
             // 分块放置（稀疏：pieceId >= 0 → obj_piece+BE，-1 → 石头）
@@ -533,7 +535,7 @@ public class ObjImportCommand {
         if (path == null || path.isBlank()) return null;
         File texFile = new File(path);
         if (!texFile.exists()) {
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 贴图文件不存在: {}", texFile.getAbsolutePath());
+            ObjDebug.warn("[Objuilder] 贴图文件不存在: {}", texFile.getAbsolutePath());
             return null;
         }
         try {
@@ -547,7 +549,7 @@ public class ObjImportCommand {
             } else {
                 java.awt.image.BufferedImage bi = javax.imageio.ImageIO.read(texFile);
                 if (bi == null) {
-                    PolarisObjuilder.LOGGER.warn("[Objuilder] 贴图解码失败: {}", texFile.getAbsolutePath());
+                    ObjDebug.warn("[Objuilder] 贴图解码失败: {}", texFile.getAbsolutePath());
                     return null;
                 }
                 NativeImage img = new NativeImage(bi.getWidth(), bi.getHeight(), false);
@@ -565,13 +567,13 @@ public class ObjImportCommand {
                 return img;
             }
         } catch (Exception e) {
-            PolarisObjuilder.LOGGER.warn("[Objuilder] 贴图加载失败: {}", texFile.getAbsolutePath(), e);
+            ObjDebug.warn("[Objuilder] 贴图加载失败: {}", texFile.getAbsolutePath(), e);
             return null;
         }
     }
 
     private static void logLoaded(File texFile, NativeImage img) {
-        PolarisObjuilder.LOGGER.info("[Objuilder] 贴图加载成功: {} ({}x{})",
+        ObjDebug.info("[Objuilder] 贴图加载成功: {} ({}x{})",
                 texFile.getName(), img.getWidth(), img.getHeight());
     }
 
@@ -945,7 +947,7 @@ public class ObjImportCommand {
         sb.append("\n[展平] 渲染三角形 ").append(flat.triangles().size())
                 .append(" · 中心格 ").append(flat.ox()).append(',').append(flat.oy()).append(',').append(flat.oz())
                 .append("\n=================================");
-        PolarisObjuilder.LOGGER.info("[Glb]{}", sb);
+        ObjDebug.info("[Glb]{}", sb);
     }
 
     private static void appendGlbNode(StringBuilder sb, GlbModel model, int idx, int depth) {
@@ -1091,7 +1093,7 @@ public class ObjImportCommand {
                 img.setPixelRGBA(0, 0, (a << 24) | 0x00FFFFFF); // ABGR：RGB 白，A=二值化结果
                 bases.set(i, img);
             }
-            PolarisObjuilder.LOGGER.info("[Glb] MASK 材质 #{} alpha 已二值化: cutoff={} factorA={}",
+            ObjDebug.info("[Glb] MASK 材质 #{} alpha 已二值化: cutoff={} factorA={}",
                     i, cutoff, factorA);
         }
     }
@@ -1123,7 +1125,7 @@ public class ObjImportCommand {
             List<NativeImage> loaded = loadTextures(List.of(m.mapD), objFile);
             NativeImage alphaImg = loaded.isEmpty() ? null : loaded.get(0);
             if (alphaImg == null) {
-                PolarisObjuilder.LOGGER.warn("[Objuilder] map_d 贴图加载失败，材质 '{}' MASK 镂空无效", m.name);
+                ObjDebug.warn("[Objuilder] map_d 贴图加载失败，材质 '{}' MASK 镂空无效", m.name);
                 continue;
             }
             int bw = base != null ? base.getWidth() : alphaImg.getWidth();
@@ -1141,7 +1143,7 @@ public class ObjImportCommand {
                 }
             }
             bases.set(i, out);
-            PolarisObjuilder.LOGGER.info("[Objuilder] 材质 '{}' map_d alpha 已合成并二值化 (map_d {}x{} → base {}x{})",
+            ObjDebug.info("[Objuilder] 材质 '{}' map_d alpha 已合成并二值化 (map_d {}x{} → base {}x{})",
                     m.name, aw, ah, bw, bh);
         }
     }
@@ -1192,7 +1194,7 @@ public class ObjImportCommand {
         if (bytes == null) return null;
         NativeImage img = decodeGlbImage(bytes, imgIdx);
         if (img != null) {
-            PolarisObjuilder.LOGGER.info("[Glb] 贴图解码成功 image#{} ({}x{})",
+            ObjDebug.info("[Glb] 贴图解码成功 image#{} ({}x{})",
                     imgIdx, img.getWidth(), img.getHeight());
         }
         return img;
@@ -1211,7 +1213,7 @@ public class ObjImportCommand {
             try (InputStream in = new java.io.ByteArrayInputStream(bytes)) {
                 return NativeImage.read(in);
             } catch (Exception e) {
-                PolarisObjuilder.LOGGER.warn("[Glb] PNG 解码失败 image#{}", imgIdx, e);
+                ObjDebug.warn("[Glb] PNG 解码失败 image#{}", imgIdx, e);
                 return null;
             }
         }
@@ -1219,7 +1221,7 @@ public class ObjImportCommand {
         try {
             java.awt.image.BufferedImage bi = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(bytes));
             if (bi == null) {
-                PolarisObjuilder.LOGGER.warn("[Glb] ImageIO 解码失败 image#{}", imgIdx);
+                ObjDebug.warn("[Glb] ImageIO 解码失败 image#{}", imgIdx);
                 return null;
             }
             NativeImage img = new NativeImage(bi.getWidth(), bi.getHeight(), false);
@@ -1235,7 +1237,7 @@ public class ObjImportCommand {
             }
             return img;
         } catch (Exception e) {
-            PolarisObjuilder.LOGGER.warn("[Glb] 贴图解码失败 image#{}", imgIdx, e);
+            ObjDebug.warn("[Glb] 贴图解码失败 image#{}", imgIdx, e);
             return null;
         }
     }
@@ -1288,7 +1290,7 @@ public class ObjImportCommand {
             NativeImage img = new NativeImage(NativeImage.Format.RGBA, 1, 1, false);
             img.setPixelRGBA(0, 0, packLabPbr(metal, rough, emis));
             images.add(img);
-            PolarisObjuilder.LOGGER.info("[Objuilder] 材质 '{}' → specular 标量 metal={} rough={} (Ks={} Ns={})",
+            ObjDebug.info("[Objuilder] 材质 '{}' → specular 标量 metal={} rough={} (Ks={} Ns={})",
                     m.name, metal, rough, clamp01(Math.max(m.ksR, Math.max(m.ksG, m.ksB))), m.ns);
         }
         return images;

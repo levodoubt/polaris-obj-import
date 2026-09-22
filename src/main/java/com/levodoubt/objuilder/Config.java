@@ -34,7 +34,27 @@ public class Config {
             .comment("A list of items to log on common setup.")
             .defineListAllowEmpty("items", List.of("minecraft:iron_ingot"), () -> "", Config::validateItemName);
 
+    /** 调试输出总开关：false = 隐藏本模组的一切调试输出（控制台诊断日志 + 屏上诊断提示） */
+    public static final ModConfigSpec.BooleanValue DEBUG = BUILDER
+            .comment("调试输出总开关。false = 隐藏本模组的一切调试输出：",
+                    "  · 控制台诊断日志（[Objuilder]/[Glb] 前缀行、阴影诊断、交互拾取、摆放碰撞盒世界盒…）",
+                    "  · 屏上诊断提示（actionbar 的\"触发失败：已消耗/不可交互/准星偏离 N 格\"等）",
+                    "不受影响：error 级报错（含异常栈）与指令反馈（/objplace 等 chat 回显）。",
+                    "游戏内用 /objdebug true|false|on|off 切换（会立即写回本文件）。")
+            .define("debug", true);
+
     static final ModConfigSpec SPEC = BUILDER.build();
+
+    /** 读配置里的调试开关（供 ObjDebug 同步；配置未加载时会抛，调用方需 try/catch） */
+    public static boolean debugConfigured() {
+        return DEBUG.get();
+    }
+
+    /** 写调试开关并落盘（/objdebug 调用；落盘失败抛异常，由指令侧捕获提示） */
+    public static void saveDebug(boolean value) {
+        DEBUG.set(value);
+        SPEC.save();
+    }
 
     private static boolean validateItemName(final Object obj) {
         return obj instanceof String itemName && BuiltInRegistries.ITEM.containsKey(ResourceLocation.parse(itemName));

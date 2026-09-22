@@ -1,5 +1,7 @@
 package com.levodoubt.objuilder.core;
 
+import com.levodoubt.objuilder.debug.ObjDebug;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -135,7 +137,7 @@ public class GlbParser {
                             pos = readAccessor(accessorsArr.get(attrs.get("POSITION").getAsInt()).getAsJsonObject(),
                                     bufferViewsArr, bin);
                         } else {
-                            PolarisObjuilder.LOGGER.warn("[Glb] mesh '{}' primitive 无 POSITION，跳过", mname);
+                            ObjDebug.warn("[Glb] mesh '{}' primitive 无 POSITION，跳过", mname);
                             continue;
                         }
                         if (attrs.has("NORMAL")) {
@@ -272,12 +274,12 @@ public class GlbParser {
                         int len = optInt(bvo, "byteLength", 0);
                         model.images.add(Arrays.copyOfRange(bin, off, off + len));
                     } else {
-                        PolarisObjuilder.LOGGER.warn("[Glb] image buffer {} 非 BIN chunk，跳过", buffer);
+                        ObjDebug.warn("[Glb] image buffer {} 非 BIN chunk，跳过", buffer);
                         model.images.add(null);
                     }
                 } else {
                     // 外部 uri 贴图：本子工程不支持（静态显示可回退纯色）
-                    PolarisObjuilder.LOGGER.warn("[Glb] 外部 uri 贴图不支持（{}）", optString(o, "uri", "?"));
+                    ObjDebug.warn("[Glb] 外部 uri 贴图不支持（{}）", optString(o, "uri", "?"));
                     model.images.add(null);
                 }
             }
@@ -296,14 +298,14 @@ public class GlbParser {
                     JsonObject co = ce.getAsJsonObject();
                     JsonObject target = co.has("target") ? co.getAsJsonObject("target") : null;
                     if (target == null || !target.has("node") || !co.has("sampler")) {
-                        PolarisObjuilder.LOGGER.warn("[Glb] 动画 '{}' 有 channel 缺 target.node/sampler，跳过", aname);
+                        ObjDebug.warn("[Glb] 动画 '{}' 有 channel 缺 target.node/sampler，跳过", aname);
                         continue;
                     }
                     String path = optString(target, "path", "");
                     if (!path.equals("translation") && !path.equals("rotation")
                             && !path.equals("scale") && !path.equals("weights")) {
                         // 仅刚体 TRS + morph 权重动画（网格动画）：其它 path（如 pointer 扩展）跳过
-                        PolarisObjuilder.LOGGER.warn("[Glb] 动画 '{}' channel path='{}' 跳过（不支持的 path）", aname, path);
+                        ObjDebug.warn("[Glb] 动画 '{}' channel path='{}' 跳过（不支持的 path）", aname, path);
                         continue;
                     }
                     int nodeIdx = target.get("node").getAsInt();
@@ -319,7 +321,7 @@ public class GlbParser {
                                 bufferViewsArr, bin);
                         chans.add(new GlbModel.Channel(nodeIdx, path, interpolation, times, values));
                     } catch (Exception ex) {
-                        PolarisObjuilder.LOGGER.warn("[Glb] 动画 '{}' channel 数据解析失败，跳过", aname, ex);
+                        ObjDebug.warn("[Glb] 动画 '{}' channel 数据解析失败，跳过", aname, ex);
                     }
                 }
                 model.animations.add(new GlbModel.Animation(aname, chans));
