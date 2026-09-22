@@ -66,17 +66,24 @@ public class PolarisObjuilderNetwork {
         if (context.flow().isClientbound()) return;
         context.enqueueWork(() -> {
             if (!(context.player() instanceof ServerPlayer player)) return;
-            if (!(player.level().getEntity(payload.entityId()) instanceof ColliderEntity ce)) return;
-            if (player.isSpectator() || !ce.isPickable()) return;
+            net.minecraft.world.entity.Entity ent = player.level().getEntity(payload.entityId());
+            if (!(ent instanceof ColliderEntity ce)) {
+                reject(player, "实体不存在或未加载", null, payload.entityId());
+                return;
+            }
+            if (player.isSpectator()) return;
+            if (!ce.isPickEnabled()) {
+                reject(player, "该部件已被消耗/禁用", ce, payload.entityId());
+                return;
+            }
+            if (!ce.isPickable()) {
+                reject(player, "该部件不可交互（无 @动画/$命令）", ce, payload.entityId());
+                return;
+            }
             double reach = 4.5;
             double d2 = player.getEyePosition().distanceToSqr(ce.getBoundingBox().getCenter());
             if (d2 > reach * reach) {
-                long nowMs = net.minecraft.Util.getMillis();
-                if (nowMs - assistWarnAtMs > 2000L) {
-                    assistWarnAtMs = nowMs;
-                    PolarisObjuilder.LOGGER.info("[Objuilder][点击辅助] 服务端拒绝：部件 '{}' 距玩家 {} 格 > {} 格",
-                            ce.getPartName(), String.format("%.2f", Math.sqrt(d2)), reach);
-                }
+                reject(player, String.format("超出交互距离 %.2f > %.1f 格", Math.sqrt(d2), reach), ce, payload.entityId());
                 return;
             }
             long now = player.level().getGameTime();
@@ -89,5 +96,19 @@ public class PolarisObjuilderNetwork {
             PolarisObjuilder.LOGGER.error("[Objuilder] 点击辅助包处理失败", e);
             return null;
         });
+    }
+
+    /** 触发失败 → 游戏内 actionbar + 日志（节流 1 秒，避免刷屏）；ce 可能为 null（实体缺失时） */
+    private static void reject(ServerPlayer player, String reason, ColliderEntity ce, int entityId) {
+        String part = ce == null ? "?" : String.valueOf(ce.getPartName());
+        int pid = ce == null ? -1 : ce.getPlacementId();
+        long nowMs = net.minecraft.Util.getMillis();
+        if (nowMs - assistWarnAtMs > 1000L) {
+            assistWarnAtMs = nowMs;
+            player.displayClientMessage(net.minecraft.network.chat.Component.literal(
+                    "§c[Objuilder] 触发失败：" + reason + "（部件 " + part + " · 摆放 #" + pid + "）"), true);
+        }
+        PolarisObjuilder.LOGGER.info("[Objuilder][点击辅助] 拒绝：{}（部件 '{}' 摆放 #{} 实体 #{} 玩家 {}）",
+                reason, part, pid, entityId, player.getScoreboardName());
     }
 }

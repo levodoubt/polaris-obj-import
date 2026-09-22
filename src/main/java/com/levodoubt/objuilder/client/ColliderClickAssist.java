@@ -9,6 +9,7 @@ import com.levodoubt.objuilder.network.ColliderClickPayload;
 
 import net.minecraft.Util;
 import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -20,24 +21,11 @@ import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
- * 交互盒拾取（2.1.17）：右键我们自己的碰撞盒时，用「宽容射线 + 精确命中优先 / 最具体盒优先」自己判定一次。
+ * 交互盒拾取（2.1.17 / 2.1.18）：右键我们自己的碰撞盒时，用「宽容射线 + 精确命中优先 / 最具体盒优先」自己判定一次；
+ * **判不到时也要给出原因**（actionbar + 日志），便于现场定位"点了没反应"。
  *
- * <p><b>为什么不用原版拾取</b>：原版判定盒 = {@code getBoundingBox().inflate(getPickRadius())}，
- * 且必须在 {@code entityInteractionRange()}（默认 3 格）内、服务端还会再查一次 3 格。
- * 而 0.3.1（e037bfc）为修"大盒膨胀吞掉 2cm 子弹盒"，把 {@code getPickRadius()} 从
- * {@code min(4, size*0.5+0.25)}（步枪盒 0.615 m）收窄到 {@code min(0.3, 0.1+size*0.05)}（0.136 m）
- * —— 可点区域缩掉约 0.5 m，导致"大致瞄着枪身"点不中（用户实测：老版本没问题、新版偶尔才成功）。
- *
- * <p><b>现在的规则</b>（既恢复手感、又不吞盒）：
- * <ol>
- *   <li>射线与 {@code inflate(min(0.6, 0.25 + size*0.35))} 求交，收集全部候选；</li>
- *   <li>若其中有"射线直接命中**未膨胀**盒"的候选 → 取**未膨胀体积最小**者（精确瞄准 = 最具体部件，
- *       子弹盒赢过枪盒/桌子）；</li>
- *   <li>否则取**最近**的膨胀命中（近失手也能点中，与原版语义一致）。</li>
- * </ol>
- *
- * <p>命中我们的盒 → 取消原版处理（避免双重触发）+ 发 {@link ColliderClickPayload} + 挥手；
- * 没命中 → 什么都不做，原版路径照旧（箱子/门/其它模组不受影响）。
+ * <p>规则见 v0.3.8 注释：膨胀 {@code min(0.6, 0.25+size*0.35)}；命中**未膨胀**盒者取体积最小，
+ * 否则取最近膨胀命中。命中即发 {@link ColliderClickPayload}（服务端复用 {@code ColliderEntity.interact}）。
  */
 @EventBusSubscriber(modid = PolarisObjuilder.MODID, value = Dist.CLIENT, bus = EventBusSubscriber.Bus.GAME)
 public final class ColliderClickAssist {
@@ -46,7 +34,13 @@ public final class ColliderClickAssist {
     /** 膨胀下限/上限（格） */
     private static final double MIN_INFLATE = 0.25;
     private static final double MAX_INFLATE = 0.6;
+    /** 未命中时的"打扰半径"（格）：准星离某个可交互盒比它更近才提示，避免右键箱子也弹提示 */
+    private static final double MISS_HINT_OFFSET = 0.8;
+    /** 探测用的膨胀档位（找"离准星多近"） */
+    private static final double[] MISS_PROBE = {0.05, 0.1, 0.2, 0.35, 0.55, 0.8};
+
     private static long lastLogMs = 0L;
+    private static long lastMissMs = 0L;
 
     private ColliderClickAssist() {
     }
@@ -58,7 +52,10 @@ public final class ColliderClickAssist {
         if (mc.player == null || mc.level == null || mc.gameMode == null) return;
         if (mc.player.isSpectator()) return;
         ColliderEntity hit = pick(mc);
-        if (hit == null) return;
+        if (hit == null) {
+            reportMiss(mc);
+            return;
+        }
         event.setCanceled(true);
         PacketDistributor.sendToServer(new ColliderClickPayload(hit.getId(),
                 event.getHand() == InteractionHand.OFF_HAND ? 1 : 0));
@@ -66,9 +63,48 @@ public final class ColliderClickAssist {
         long now = Util.getMillis();
         if (now - lastLogMs > 1000L) {
             lastLogMs = now;
-            PolarisObjuilder.LOGGER.info("[Objuilder][交互拾取] 命中部件 '{}'（摆放 #{}）",
-                    hit.getPartName(), hit.getPlacementId());
+            PolarisObjuilder.LOGGER.info("[Objuilder][交互拾取] 命中部件 '{}'（摆放 #{}，实体 #{}）",
+                    hit.getPartName(), hit.getPlacementId(), hit.getId());
         }
+    }
+
+    /**
+     * 没命中时的原因反馈：若准星附近（{@value #MISS_HINT_OFFSET} 格内）存在可交互盒，
+     * 说明"玩家在瞄它但没点中" → actionbar + 日志给出偏离量与部件信息（节流 1 秒）。
+     */
+    private static void reportMiss(Minecraft mc) {
+        Entity cam = mc.getCameraEntity() != null ? mc.getCameraEntity() : mc.player;
+        Vec3 eye = cam.getEyePosition(1.0f);
+        Vec3 end = eye.add(cam.getViewVector(1.0f).scale(REACH));
+        List<ColliderEntity> near = mc.level.getEntitiesOfClass(ColliderEntity.class,
+                new AABB(eye, end).inflate(MAX_INFLATE + 0.5), ce -> ce.isPickable());
+        ColliderEntity closest = null;
+        double closestOff = Double.MAX_VALUE;
+        for (ColliderEntity ce : near) {
+            double off = rayOffset(eye, end, ce.getBoundingBox());
+            if (off < closestOff) {
+                closestOff = off;
+                closest = ce;
+            }
+        }
+        if (closest == null || closestOff > MISS_HINT_OFFSET) return;
+        long now = Util.getMillis();
+        if (now - lastMissMs < 1000L) return;
+        lastMissMs = now;
+        String part = closest.getPartName();
+        int pid = closest.getPlacementId();
+        mc.player.displayClientMessage(Component.literal(String.format(
+                "§e[Objuilder] 未触发：准星偏离部件 '%s' 约 %.2f 格（摆放 #%d）", part, closestOff, pid)), true);
+        PolarisObjuilder.LOGGER.info("[Objuilder][交互拾取] 未命中：最近可交互部件 '{}'（摆放 #{}，实体 #{}）偏离准星 {} 格",
+                part, pid, closest.getId(), String.format("%.2f", closestOff));
+    }
+
+    /** 射线到盒面的近似距离（用若干膨胀档位探测；超过最大档返回 999） */
+    private static double rayOffset(Vec3 eye, Vec3 end, AABB box) {
+        for (double k : MISS_PROBE) {
+            if (box.inflate(k).clip(eye, end).isPresent()) return k;
+        }
+        return 999.0;
     }
 
     /** 宽容射线拾取：精确命中优先（取最具体盒），否则取最近膨胀命中 */
@@ -79,15 +115,14 @@ public final class ColliderClickAssist {
         AABB search = new AABB(eye, end).inflate(MAX_INFLATE + 0.5);
         List<ColliderEntity> cands = mc.level.getEntitiesOfClass(ColliderEntity.class, search,
                 ce -> ce.isPickable());
-        ColliderEntity exactBest = null;   // 直接命中未膨胀盒 → 体积最小者
+        ColliderEntity exactBest = null;
         double exactVol = Double.MAX_VALUE;
-        ColliderEntity nearBest = null;    // 仅命中膨胀盒 → 最近者
+        ColliderEntity nearBest = null;
         double nearD2 = Double.MAX_VALUE;
         for (ColliderEntity ce : cands) {
             AABB raw = ce.getBoundingBox();
             double inflate = Math.max(MIN_INFLATE, Math.min(MAX_INFLATE, 0.25 + raw.getSize() * 0.35));
-            AABB fat = raw.inflate(inflate);
-            Optional<Vec3> hitFat = fat.clip(eye, end);
+            Optional<Vec3> hitFat = raw.inflate(inflate).clip(eye, end);
             if (hitFat.isEmpty()) continue;
             double d2 = eye.distanceToSqr(hitFat.get());
             if (d2 < nearD2) {

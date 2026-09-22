@@ -333,7 +333,12 @@ public class ColliderEntity extends Entity {
             return InteractionResult.SUCCESS; // 客户端只做准星拾取
         }
         if (!isPickEnabled()) {
-            return InteractionResult.PASS; // 服务端权威：已消耗（客户端可能时序性重发 interact 包）
+            // 服务端权威：已消耗（客户端可能时序性重发 interact 包）—— 必须给可见原因，否则现场只会看到"点了没反应"
+            player.displayClientMessage(Component.literal("§c[Objuilder] 触发失败：部件已消耗/禁用（"
+                    + getPartName() + " · 摆放 #" + getPlacementId() + "）"), true);
+            PolarisObjuilder.LOGGER.info("[Objuilder][交互] 拒绝：部件 '{}' 摆放 #{} 已消耗/禁用（pickEnabled=false）",
+                    getPartName(), getPlacementId());
+            return InteractionResult.PASS;
         }
         if (!(player instanceof ServerPlayer serverPlayer)) {
             return InteractionResult.PASS;
@@ -365,6 +370,8 @@ public class ColliderEntity extends Entity {
             int result = CommandTable.run(serverPlayer, cmd, getPartName(), getPlacementId(), this.box.getCenter());
             // "未生效"判据：consume="result" 且返回值 <= 0（含 cmds 多命令"任一条失败即中止"返回 0）
             boolean ineffective = CommandTable.mode(cmd) == CommandTable.Consume.RESULT && result <= 0;
+            PolarisObjuilder.LOGGER.info("[Objuilder][交互] 部件 '{}' 摆放 #{} 命令 {} → 返回 {}（{}）",
+                    getPartName(), getPlacementId(), cmd, result, ineffective ? "未生效" : "已生效");
             if (ineffective) {
                 // 加固 B：失败必须给玩家可见反馈（否则现场只能翻日志）
                 String why = getPartName() == null ? cmd : cmd + "（部件 " + getPartName() + "）";
