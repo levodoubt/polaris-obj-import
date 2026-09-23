@@ -169,7 +169,7 @@ public class PolarisObjuilderServerEvents {
         ObjDebug.control(source, () -> Component.literal(
                 "§8  · 不受调试开关影响：error 级报错（含异常栈）、无前缀的指令失败提示、/objdebug 自身回执"), false);
         ObjDebug.control(source, () -> Component.literal(
-                "§8  · 持久化：config/polarisobjbuilder-common.toml → debug / commandFeedback"), false);
+                "§8  · 持久化：config/polarisobjuilder-common.toml → debug / commandFeedback"), false);
         return 1;
     }
 

@@ -46,7 +46,7 @@
 Put your `.obj` / `.glb` files into:
 
 ```
-config/polarisobjbuilder/models/
+config/polarisobjuilder/models/
 ```
 
 References are relative to that folder (e.g. `models/building.glb`, or just the filename `building.glb`).
@@ -70,7 +70,7 @@ Example: `/objplace ~ ~1 ~ 0 1.0 models/door.glb` (at the player's feet, yaw=0, 
 
 ### Command hooks (`$cmdKey` → real commands)
 
-A marker box whose name carries `$key` runs the matching command from `config/polarisobjbuilder/commands.json` on right-click:
+A marker box whose name carries `$key` runs the matching command from `config/polarisobjuilder/commands.json` on right-click:
 
 ```json
 {
@@ -121,7 +121,7 @@ Placeholders: `%player%` `%uuid%` `%part%` `%placement%` `%x%` `%y%` `%z%`
 
 - With `false`, three channels go silent: console diagnostics, on-screen actionbar hints, and chat receipts prefixed with `[Objuilder]` / `[Glb]`
 - Not affected: `error`-level reports (including stack traces) and un-prefixed command failure messages
-- Both switches are persisted in `config/polarisobjbuilder-common.toml` and can be edited directly
+- Both switches are persisted in `config/polarisobjuilder-common.toml` and can be edited directly
 
 ### Quick import (debug only, not persisted)
 

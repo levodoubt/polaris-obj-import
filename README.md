@@ -46,7 +46,7 @@
 把 `.obj` / `.glb` 文件放入：
 
 ```
-config/polarisobjbuilder/models/
+config/polarisobjuilder/models/
 ```
 
 引用路径相对该目录（如 `models/building.glb`，也可直接写文件名 `building.glb`）。
@@ -70,7 +70,7 @@ config/polarisobjbuilder/models/
 
 ### 命令映射（`$命令键` → 真实命令）
 
-标记盒名带 `$键` 时，右键会执行 `config/polarisobjbuilder/commands.json` 里对应的命令：
+标记盒名带 `$键` 时，右键会执行 `config/polarisobjuilder/commands.json` 里对应的命令：
 
 ```json
 {
@@ -121,7 +121,7 @@ config/polarisobjbuilder/models/
 
 - `false` 时静默三路：控制台诊断日志、屏上 actionbar 诊断提示、聊天框 `[Objuilder]` / `[Glb]` 前缀回执
 - 不受影响：`error` 级报错（含异常栈）与无前缀的指令失败提示
-- 两个开关都持久化在 `config/polarisobjbuilder-common.toml`，也可直接改配置文件
+- 两个开关都持久化在 `config/polarisobjuilder-common.toml`，也可直接改配置文件
 
 ### 快捷导入（调试用，不写入存档）
 
