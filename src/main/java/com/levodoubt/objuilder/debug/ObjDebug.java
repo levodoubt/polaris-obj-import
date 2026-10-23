@@ -26,7 +26,7 @@ import net.minecraft.world.entity.player.Player;
  * </ul>
  *
  * <p>作用域与持久化：运行期是**静态开关**（单机下客户端与集成服务端同 JVM → 一次切换两端同时静默）；
- * 持久化在 `config/polarisobjuilder-common.toml` 的 `debug`（指令内改后立即落盘，重启仍生效）。
+ * 持久化在 `config/obj_importer-common.toml` 的 `debug`（指令内改后立即落盘，重启仍生效）。
  *
  * <p>⚠️ 新增诊断输出请一律走 {@link #info}/{@link #warn}/{@link #hint}，不要直接用
  * {@code PolarisObjuilder.LOGGER} —— 否则 `/objdebug false` 关不掉它（与 §7-13 同一类教训：

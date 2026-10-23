@@ -16,14 +16,14 @@ import net.minecraft.world.level.saveddata.SavedData;
 /**
  * 服务端权威摆放清单（SavedData 持久化，子工程 5）。
  *
- * - folder = polarisobjuilder_placements，重进游戏自动恢复摆放。
+ * - folder = obj_importer_placements，重进游戏自动恢复摆放。
  * - 每条记录：id(int 自增) · ref(模型引用) · x/y/z · yaw · scale · 实体 UUID（供 objremove/objclear 定位实体）。
  * - 改动必须调 setDirty()，否则不落盘。
  *
  * 1.21.1 用旧 API：{@link SavedData.Factory} + NBT（不是更高版本 SavedDataType + Codec）。
  */
 public class PlacementSavedData extends SavedData {
-    public static final String DATA_NAME = "polarisobjuilder_placements";
+    public static final String DATA_NAME = "obj_importer_placements";
 
     /** 单条摆放记录（子工程 6：colliderUuids = 该摆放的碰撞体实体 UUID 列表，供 remove/clear/恢复联动） */
     public record Placement(int id, String ref, double x, double y, double z,

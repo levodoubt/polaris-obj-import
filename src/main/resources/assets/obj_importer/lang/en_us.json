@@ -1,0 +1,9 @@
+{
+  "obj_importer.configuration.title": "Polaris Objuilder Configs",
+  "obj_importer.configuration.section.obj_importer.common.toml": "Polaris Objuilder Configs",
+  "obj_importer.configuration.section.obj_importer.common.toml.title": "Polaris Objuilder Configs",
+  "obj_importer.configuration.items": "Item List",
+  "obj_importer.configuration.logDirtBlock": "Log Dirt Block",
+  "obj_importer.configuration.magicNumberIntroduction": "Magic Number Text",
+  "obj_importer.configuration.magicNumber": "Magic Number"
+}

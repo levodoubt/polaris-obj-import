@@ -1,10 +1,10 @@
-# Polaris Objuilder
+# Obj Importer
 
 > 简体中文 | [English](README_EN.md)
 
 **外部 3D 模型导入模组（OBJ / glTF）** —— 把 Blender 制作的建筑、机械、地景导入 Minecraft 世界：整体渲染、PBR 材质、多 AABB 碰撞、右键交互与命令联动。
 
-> 目标环境：Minecraft 1.21.1 · NeoForge 21.1.248 · Java 21 · 当前版本 **0.4.5**
+> 目标环境：Minecraft 1.21.1 · NeoForge 21.1.248 · Java 21 · 当前版本 **0.5.0**
 
 ---
 
@@ -32,7 +32,7 @@
 
 ## 安装
 
-1. 将 `polarisobjuilder-<版本>.jar`（如 `polarisobjuilder-0.4.5.jar`）放入游戏 `mods/` 目录
+1. 将 `obj_importer-<版本>.jar`（如 `obj_importer-0.5.0.jar`）放入游戏 `mods/` 目录
 2. 需要 NeoForge 21.1.248 + Minecraft 1.21.1
 
 **可选依赖**（缺省时功能自动降级，模组独立可用）：
@@ -46,7 +46,7 @@
 把 `.obj` / `.glb` 文件放入：
 
 ```
-config/polarisobjuilder/models/
+config/obj_importer/models/
 ```
 
 引用路径相对该目录（如 `models/building.glb`，也可直接写文件名 `building.glb`）。
@@ -70,7 +70,7 @@ config/polarisobjuilder/models/
 
 ### 命令映射（`$命令键` → 真实命令）
 
-标记盒名带 `$键` 时，右键会执行 `config/polarisobjuilder/commands.json` 里对应的命令：
+标记盒名带 `$键` 时，右键会执行 `config/obj_importer/commands.json` 里对应的命令：
 
 ```json
 {
@@ -121,7 +121,7 @@ config/polarisobjuilder/models/
 
 - `false` 时静默三路：控制台诊断日志、屏上 actionbar 诊断提示、聊天框 `[Objuilder]` / `[Glb]` 前缀回执
 - 不受影响：`error` 级报错（含异常栈）与无前缀的指令失败提示
-- 两个开关都持久化在 `config/polarisobjuilder-common.toml`，也可直接改配置文件
+- 两个开关都持久化在 `config/obj_importer-common.toml`，也可直接改配置文件
 
 ### 快捷导入（调试用，不写入存档）
 
@@ -163,7 +163,7 @@ config/polarisobjuilder/models/
 
 ## 持久化与自愈
 
-- 摆放写入世界 `SavedData`（`polarisobjuilder_placements`），每个摆放 = 1 个视觉实体 + N 个碰撞体实体
+- 摆放写入世界 `SavedData`（`obj_importer_placements`），每个摆放 = 1 个视觉实体 + N 个碰撞体实体
 - 进世界、玩家登录、每 5 秒做一次**校核**：清理孤儿（记录已删但实体还在）与重复副本、只在该位置区块已加载时补齐缺失、并把实体 UUID 回填记录
 - `/objremove` 与 `/objclear` 幂等：记录已被删除时依然按摆放 id 兜底清理实体，避免"记录没了、模型还在、还能点"
 
@@ -175,7 +175,7 @@ config/polarisobjuilder/models/
 .\gradlew.bat build --no-configuration-cache --offline "-Dorg.gradle.jvmargs=-Xmx2G -XX:MaxMetaspaceSize=1G"
 ```
 
-产物：`build/libs/polarisobjuilder-<版本>.jar`
+产物：`build/libs/obj_importer-<版本>.jar`
 
 ---
 

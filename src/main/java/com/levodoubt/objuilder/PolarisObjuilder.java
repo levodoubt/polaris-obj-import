@@ -25,7 +25,7 @@ import net.neoforged.neoforge.registries.DeferredHolder;
  * Polaris Objuilder — 外部 OBJ 模型导入模组（B1）
  *
  * 首版（M1+M2 最小闭环）：
- *  - /objimport 命令从 config/polarisobjuilder/models 读取 .obj（无参数时内置球体）
+ *  - /objimport 命令从 config/obj_importer/models 读取 .obj（无参数时内置球体）
  *  - 切分器：按 MC 网格离散表面 → 生成"子片"并聚类为模板族
  *  - 子片以"无物品方块 + BakedModel"渲染进区块（BakedQuad 路线）
  *
@@ -35,7 +35,7 @@ import net.neoforged.neoforge.registries.DeferredHolder;
  */
 @Mod(PolarisObjuilder.MODID)
 public class PolarisObjuilder {
-    public static final String MODID = "polarisobjuilder";
+    public static final String MODID = "obj_importer";
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(MODID);

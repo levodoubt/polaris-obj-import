@@ -141,7 +141,7 @@ public class PlacementModelLoader {
         }
     }
 
-    /** 引用 → 本地文件：绝对路径直接用；相对路径按 config/polarisobjuilder/models/<ref> 解析（ref 缺 models/ 前缀时补齐） */
+    /** 引用 → 本地文件：绝对路径直接用；相对路径按 config/obj_importer/models/<ref> 解析（ref 缺 models/ 前缀时补齐） */
     private static File resolveRefFile(String ref) {
         File f = new File(ref);
         if (f.isAbsolute()) return f;

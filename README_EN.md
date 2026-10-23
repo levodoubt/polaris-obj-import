@@ -1,10 +1,10 @@
-# Polaris Objuilder
+# Obj Importer
 
 > [简体中文](README.md) | English
 
 **External 3D model importer (OBJ / glTF)** — bring Blender-made buildings, machines and scenery into Minecraft: whole-model rendering, PBR materials, multi-AABB collision, right-click interaction and command hooks.
 
-> Target environment: Minecraft 1.21.1 · NeoForge 21.1.248 · Java 21 · Current version **0.4.5**
+> Target environment: Minecraft 1.21.1 · NeoForge 21.1.248 · Java 21 · Current version **0.5.0**
 
 ---
 
@@ -32,7 +32,7 @@
 
 ## Installation
 
-1. Put `polarisobjuilder-<version>.jar` (e.g. `polarisobjuilder-0.4.5.jar`) into the game's `mods/` folder
+1. Put `obj_importer-<version>.jar` (e.g. `obj_importer-0.5.0.jar`) into the game's `mods/` folder
 2. Requires NeoForge 21.1.248 + Minecraft 1.21.1
 
 **Optional dependencies** (features degrade gracefully, the mod works standalone):
@@ -46,7 +46,7 @@
 Put your `.obj` / `.glb` files into:
 
 ```
-config/polarisobjuilder/models/
+config/obj_importer/models/
 ```
 
 References are relative to that folder (e.g. `models/building.glb`, or just the filename `building.glb`).
@@ -70,7 +70,7 @@ Example: `/objplace ~ ~1 ~ 0 1.0 models/door.glb` (at the player's feet, yaw=0, 
 
 ### Command hooks (`$cmdKey` → real commands)
 
-A marker box whose name carries `$key` runs the matching command from `config/polarisobjuilder/commands.json` on right-click:
+A marker box whose name carries `$key` runs the matching command from `config/obj_importer/commands.json` on right-click:
 
 ```json
 {
@@ -121,7 +121,7 @@ Placeholders: `%player%` `%uuid%` `%part%` `%placement%` `%x%` `%y%` `%z%`
 
 - With `false`, three channels go silent: console diagnostics, on-screen actionbar hints, and chat receipts prefixed with `[Objuilder]` / `[Glb]`
 - Not affected: `error`-level reports (including stack traces) and un-prefixed command failure messages
-- Both switches are persisted in `config/polarisobjuilder-common.toml` and can be edited directly
+- Both switches are persisted in `config/obj_importer-common.toml` and can be edited directly
 
 ### Quick import (debug only, not persisted)
 
@@ -163,7 +163,7 @@ A marker box is a plain box object named `<prefix>:<part>[@<anim>][$<cmdKey>]`, 
 
 ## Persistence & self-healing
 
-- Placements are stored in world `SavedData` (`polarisobjuilder_placements`); each placement = 1 visual entity + N collider entities
+- Placements are stored in world `SavedData` (`obj_importer_placements`); each placement = 1 visual entity + N collider entities
 - On world load, player login and every 5 seconds a **reconciliation** runs: leftovers (entities whose record is gone) and duplicate copies are removed, missing parts are re-created only once that chunk is loaded, and entity UUIDs are written back into the records
 - `/objremove` and `/objclear` are idempotent: even when the record is already gone they still clean up entities by placement id, so "record gone, model still there, still clickable" cannot happen
 
@@ -175,7 +175,7 @@ A marker box is a plain box object named `<prefix>:<part>[@<anim>][$<cmdKey>]`, 
 .\gradlew.bat build --no-configuration-cache --offline "-Dorg.gradle.jvmargs=-Xmx2G -XX:MaxMetaspaceSize=1G"
 ```
 
-Output: `build/libs/polarisobjuilder-<version>.jar`
+Output: `build/libs/obj_importer-<version>.jar`
 
 ---
 

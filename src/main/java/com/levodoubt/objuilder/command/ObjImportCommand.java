@@ -48,7 +48,7 @@ import net.minecraft.world.level.block.state.BlockState;
  * /objimport <mode> [scale] [file] — 客户端命令（单机验证用）
  *   mode: slice（子片空壳）/ block（子片 + 内部石头）
  *   scale: 可选浮点缩放
- *   file: 可选，读取 config/polarisobjuilder/models/<file> 或绝对路径；缺省内置球体
+ *   file: 可选，读取 config/obj_importer/models/<file> 或绝对路径；缺省内置球体
  *
  * 重负载（切分/烘焙）在后台线程执行，摆放按每 tick 分块 → 不阻塞主线程。
  * /objexport <file> <out> — 离线烘焙：切分结果保存为 .objb
@@ -428,7 +428,7 @@ public class ObjImportCommand {
 
     public static String neoforgePath() {
         return net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
-                .resolve("polarisobjuilder").toString();
+                .resolve("obj_importer").toString();
     }
 
     /** 加载模型 map_Kd 贴图：绝对路径直接用；相对路径解析到 OBJ 目录。png/jpg 均支持。 */

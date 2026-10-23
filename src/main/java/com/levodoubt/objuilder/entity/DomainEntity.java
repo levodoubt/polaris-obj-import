@@ -30,7 +30,7 @@ import net.minecraft.server.level.ServerEntity;
 public class DomainEntity extends Entity {
     public static final EntityDataAccessor<Integer> DATA_DOMAIN_ID =
             SynchedEntityData.defineId(DomainEntity.class, EntityDataSerializers.INT);
-    /** 模型引用（相对 config/polarisobjuilder/models/ 的路径，如 models/door.glb；空 = 旧流程走 domainId） */
+    /** 模型引用（相对 config/obj_importer/models/ 的路径，如 models/door.glb；空 = 旧流程走 domainId） */
     public static final EntityDataAccessor<String> DATA_MODEL_REF =
             SynchedEntityData.defineId(DomainEntity.class, EntityDataSerializers.STRING);
     /** 模型整体缩放（1.0 = 原尺寸） */

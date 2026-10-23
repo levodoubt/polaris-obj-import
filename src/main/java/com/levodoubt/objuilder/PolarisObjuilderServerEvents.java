@@ -61,7 +61,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
  *
  * 命令映射表（子工程 8）：
  *   /objcmd reload | list | test &lt;键&gt;      —— commands.json 热重载 / 列出键 / 调试执行
- *   文件：config/polarisobjuilder/commands.json（模型里的 `$键` 在这里映射成真实命令）
+ *   文件：config/obj_importer/commands.json（模型里的 `$键` 在这里映射成真实命令）
  */
 @EventBusSubscriber(modid = PolarisObjuilder.MODID, bus = EventBusSubscriber.Bus.GAME)
 public class PolarisObjuilderServerEvents {
@@ -169,7 +169,7 @@ public class PolarisObjuilderServerEvents {
         ObjDebug.control(source, () -> Component.literal(
                 "§8  · 不受调试开关影响：error 级报错（含异常栈）、无前缀的指令失败提示、/objdebug 自身回执"), false);
         ObjDebug.control(source, () -> Component.literal(
-                "§8  · 持久化：config/polarisobjuilder-common.toml → debug / commandFeedback"), false);
+                "§8  · 持久化：config/obj_importer-common.toml → debug / commandFeedback"), false);
         return 1;
     }
 
@@ -478,7 +478,7 @@ public class PolarisObjuilderServerEvents {
         String normalized = normalizeRef(ref);
         if (normalized == null) {
             source.sendFailure(Component.literal(
-                    "引用无效：绝对路径必须在 config/polarisobjuilder/models/ 下；相对路径用 models/<file>"));
+                    "引用无效：绝对路径必须在 config/obj_importer/models/ 下；相对路径用 models/<file>"));
             return 0;
         }
         File modelFile = modelsDir().resolve(normalized).toFile();
@@ -915,9 +915,9 @@ public class PolarisObjuilderServerEvents {
         return cleared;
     }
 
-    /** config/polarisobjuilder 目录 */
+    /** config/obj_importer 目录 */
     private static java.nio.file.Path modelsDir() {
         return net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
-                .resolve("polarisobjuilder");
+                .resolve("obj_importer");
     }
 }

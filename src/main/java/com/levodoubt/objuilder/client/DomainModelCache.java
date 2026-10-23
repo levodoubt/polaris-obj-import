@@ -234,7 +234,7 @@ public class DomainModelCache {
             if (normal == null) normal = neutralNormal();
             if (specular == null) specular = neutralSpecular();
             // register(String, DynamicTexture) 重载只收 DynamicTexture 且返回位置；ResourceLocation 重载接受 AbstractTexture 但返回 void
-            ResourceLocation loc = ResourceLocation.fromNamespaceAndPath("polarisobjuilder",
+            ResourceLocation loc = ResourceLocation.fromNamespaceAndPath("obj_importer",
                     "model_" + TEXTURE_SEQ.incrementAndGet());
             Minecraft.getInstance().getTextureManager().register(loc, new PbrCapableTexture(base, normal, specular));
             map.put(i, loc);
@@ -247,7 +247,7 @@ public class DomainModelCache {
 
     public static ResourceLocation defaultTexture() {
         if (DEFAULT_TEXTURE == null) {
-            ResourceLocation loc = ResourceLocation.fromNamespaceAndPath("polarisobjuilder", "model_default_pbr");
+            ResourceLocation loc = ResourceLocation.fromNamespaceAndPath("obj_importer", "model_default_pbr");
             Minecraft.getInstance().getTextureManager().register(loc,
                     new PbrCapableTexture(whitePixel(), neutralNormal(), neutralSpecular()));
             DEFAULT_TEXTURE = loc;

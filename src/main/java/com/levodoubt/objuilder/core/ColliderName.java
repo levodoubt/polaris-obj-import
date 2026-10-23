@@ -11,7 +11,7 @@ package com.levodoubt.objuilder.core;
  *   <li>前缀 {@code col:} = 参与实体碰撞；{@code use:} = 不参与碰撞（玩家可穿过），其余规则完全相同</li>
  *   <li>其它前缀 → 返回 {@code null}（不是碰撞盒：不解析、照常渲染）</li>
  *   <li>{@code @动画名} → 该盒可点，点击走"动画 toggle"（子工程 7 语义）</li>
- *   <li>{@code $命令键} → 该盒可点，点击执行 {@code config/polarisobjuilder/commands.json} 里该键的真实命令</li>
+ *   <li>{@code $命令键} → 该盒可点，点击执行 {@code config/obj_importer/commands.json} 里该键的真实命令</li>
  *   <li>两者都可缺省；两侧空白 trim；{@code @}/{@code $} 后为空视为未配置</li>
  *   <li>{@code $} 出现在 {@code @} 之前（如 {@code col:a$b@c}）→ 判为非法：{@code $} 段忽略、按纯碰撞盒处理
  *       （{@link #invalidOrder()} 置位，由调用方 warn，避免"点了没反应还查不出原因"）</li>

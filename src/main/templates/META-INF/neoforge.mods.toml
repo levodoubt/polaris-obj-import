@@ -15,7 +15,7 @@ loaderVersion="${loader_version_range}" #mandatory
 license="${mod_license}"
 
 # A URL to refer people to when problems occur with this mod
-#issueTrackerURL="https://change.me.to.your.issue.tracker.example.invalid/" #optional
+issueTrackerURL="https://github.com/levodoubt/polaris-obj-import/issues" #optional
 
 # A list of mods - how many allowed here is determined by the individual mod loader
 [[mods]] #mandatory
@@ -33,20 +33,25 @@ displayName="${mod_name}" #mandatory
 #updateJSONURL="https://change.me.example.invalid/updates.json" #optional
 
 # A URL for the "homepage" for this mod, displayed in the mod UI
-#displayURL="https://change.me.to.your.mods.homepage.example.invalid/" #optional
+displayURL="https://github.com/levodoubt/polaris-obj-import" #optional
 
 # A file name (in the root of the mod JAR) containing a logo for display
-#logoFile="examplemod.png" #optional
+logoFile="logo.png" #optional
 
 # A text field displayed in the mod UI
-#credits="" #optional
+credits="Polaris 科技整合包 · 模型工作流基于 Blender" #optional
 
 # The authors of the mod, displayed in the mod UI (optional)
 authors="左旋疑惑"
 
 # The description text for the mod (multi line!) (#mandatory)
 description='''
-外部 Obj 导入模组
+把 Blender 里的建筑与机械，直接搬进 Minecraft。
+Obj Importer 将 OBJ / glTF 模型作为一整套场景物件导入世界：整栋建筑或机关作为一个整体渲染，保留分材质与 PBR 贴图，配多 AABB 碰撞箱与右键交互，适合剧情场景搭建与整合包造景。
+
+Import whole buildings and machines (OBJ / glTF) as single props with per-material PBR, multi-AABB collision and right-click interaction.
+
+Minecraft 1.21.1 · NeoForge 21.1.248 · 开源 MIT
 '''
 
 # The [[mixins]] block allows you to declare your mixin config to FML so that it gets loaded.

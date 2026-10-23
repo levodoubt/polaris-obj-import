@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "obj_importer:block/obj_piece"
+    }
+  }
+}

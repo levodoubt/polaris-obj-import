@@ -8,7 +8,7 @@ import com.levodoubt.objuilder.PolarisObjuilder;
  * StoryCore（polarisstorycore）软依赖检测与桥接加载（B1 收尾·事项 6）。
  *
  * 用 Class.forName 检测剧情核心是否存在：
- * - 存在 → 加载 {@link StoryCoreBridge}（唯一引用 StoryCore API 的类）注册剧情动作 'polarisobjuilder:anim'
+ * - 存在 → 加载 {@link StoryCoreBridge}（唯一引用 StoryCore API 的类）注册剧情动作 'obj_importer:anim'
  * - 不存在 → 静默跳过，B1 独立可用（无 NoClassDefFoundError）
  *
  * 重要：本类不得直接引用任何 StoryCore 类型；对 StoryCore 的引用全部收敛在 StoryCoreBridge，
@@ -28,7 +28,7 @@ public final class StoryCoreSupport {
             Class.forName("com.levodoubt.polarisstorycore.engine.StoryActionRegistry");
             StoryCoreBridge.register(); // 仅 StoryCore 存在时加载该类
             ObjDebug.info(
-                    "[Objuilder] 检测到 StoryCore → 已注册剧情动作 'polarisobjuilder:anim'");
+                    "[Objuilder] 检测到 StoryCore → 已注册剧情动作 'obj_importer:anim'");
         } catch (ClassNotFoundException e) {
             ObjDebug.info(
                     "[Objuilder] 未检测到 StoryCore → 跳过剧情联动（B1 独立可用）");

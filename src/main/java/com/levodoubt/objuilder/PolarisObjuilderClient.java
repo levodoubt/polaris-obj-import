@@ -125,7 +125,7 @@ public class PolarisObjuilderClient {
         // 替换 obj_piece 全部状态变体（256 个）为同一个 PieceBakedModel
         BakedModel replacement = null;
         for (java.util.Map.Entry<ModelResourceLocation, BakedModel> e : event.getModels().entrySet()) {
-            if (e.getKey().toString().startsWith("polarisobjuilder:obj_piece")) {
+            if (e.getKey().toString().startsWith("obj_importer:obj_piece")) {
                 if (replacement == null) {
                     replacement = new PieceBakedModel(e.getValue().getParticleIcon());
                 }

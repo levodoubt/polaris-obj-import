@@ -26,7 +26,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.loading.FMLPaths;
 
 /**
- * 命令映射表（子工程 8）——把模型里的 `$命令键` 解耦成 {@code config/polarisobjuilder/commands.json} 的键值对，
+ * 命令映射表（子工程 8）——把模型里的 `$命令键` 解耦成 {@code config/obj_importer/commands.json} 的键值对，
  * 改命令不用重导 glb、不用重开游戏（`/objcmd reload` 热重载）。
  *
  * <p>文件结构（见 `doc/2.1.13` §5）：
@@ -86,9 +86,9 @@ public final class CommandTable {
 
     private CommandTable() {}
 
-    /** commands.json 路径：config/polarisobjuilder/commands.json（与模型目录 models/ 同级） */
+    /** commands.json 路径：config/obj_importer/commands.json（与模型目录 models/ 同级） */
     public static Path file() {
-        return FMLPaths.CONFIGDIR.get().resolve("polarisobjuilder").resolve("commands.json");
+        return FMLPaths.CONFIGDIR.get().resolve("obj_importer").resolve("commands.json");
     }
 
     public static boolean has(String key) {
